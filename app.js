@@ -297,7 +297,7 @@ function openAuth() {
   const warning = $("#authEnvironmentWarning");
   if (warning) {
     if (location.protocol === "file:") {
-      warning.textContent = "Abra o projeto por http://localhost ou Firebase Hosting. O Firebase Authentication pode falhar quando o index.html é aberto direto como arquivo.";
+      warning.textContent = "Abra o projeto por http://localhost ou por uma hospedagem HTTPS. O login pode falhar quando o index.html é aberto diretamente como arquivo.";
       warning.classList.remove("hidden");
     } else {
       warning.classList.add("hidden");
@@ -330,7 +330,7 @@ authForm.addEventListener("submit", async (event) => {
   errorBox.classList.add("hidden");
 
   if (location.protocol === "file:") {
-    errorBox.textContent = "Abra o projeto usando http://localhost ou publique no Firebase Hosting. Não use file:// para autenticação.";
+    errorBox.textContent = "Abra o projeto usando http://localhost ou uma hospedagem HTTPS. Não use file:// para autenticação.";
     errorBox.classList.remove("hidden");
     return;
   }
@@ -364,18 +364,18 @@ function friendlyAuthError(code = "") {
     "auth/user-not-found": "Nenhuma conta foi encontrada para este e-mail.",
     "auth/wrong-password": "Senha incorreta.",
     "auth/email-already-in-use": "Este e-mail já está cadastrado. Use Entrar.",
-    "auth/weak-password": "A senha não atende aos requisitos mínimos do Firebase.",
-    "auth/password-does-not-meet-requirements": "A senha não atende à política configurada no Firebase Authentication.",
+    "auth/weak-password": "A senha não atende aos requisitos mínimos.",
+    "auth/password-does-not-meet-requirements": "A senha não atende à política de segurança configurada.",
     "auth/invalid-email": "Digite um e-mail válido.",
     "auth/missing-password": "Digite a senha.",
-    "auth/user-disabled": "Esta conta foi desativada no Firebase.",
+    "auth/user-disabled": "Esta conta foi desativada.",
     "auth/too-many-requests": "Muitas tentativas. Aguarde alguns minutos e tente novamente.",
     "auth/network-request-failed": "Falha de rede. Verifique a conexão e confirme que o projeto está sendo aberto por http:// ou https://.",
-    "auth/operation-not-allowed": "Login por E-mail/Senha não está habilitado. No Firebase Console, abra Authentication → Sign-in method e ative Email/Password.",
-    "auth/configuration-not-found": "O Firebase Authentication ainda não está configurado neste projeto. Ative Authentication e o método Email/Password no console.",
-    "auth/unauthorized-domain": "Este domínio não está autorizado no Firebase Authentication. Adicione-o em Authentication → Settings → Authorized domains.",
-    "auth/app-not-authorized": "Este domínio/app não está autorizado a usar o Firebase Authentication deste projeto.",
-    "auth/invalid-api-key": "A chave da API do Firebase é inválida ou não corresponde ao projeto."
+    "auth/operation-not-allowed": "O cadastro por e-mail e senha não está disponível no momento.",
+    "auth/configuration-not-found": "O sistema de cadastro e login ainda não está disponível.",
+    "auth/unauthorized-domain": "Este endereço não está autorizado para realizar login.",
+    "auth/app-not-authorized": "Este aplicativo não está autorizado a realizar login.",
+    "auth/invalid-api-key": "O serviço de login está indisponível devido a uma configuração inválida."
   };
   return messages[code] || `Não foi possível autenticar (${code || "erro desconhecido"}). Abra o console do navegador para ver os detalhes.`;
 }
@@ -534,7 +534,7 @@ uploadForm.addEventListener("submit", async (event) => {
   const progressText = $("#uploadProgressText");
 
   submit.disabled = true;
-  submit.textContent = "Enviando…";
+  submit.textContent = "Adicionando…";
   progressWrap.classList.remove("hidden");
 
   const ext = file.name.split(".").pop()?.toLowerCase() || "mp3";
@@ -542,7 +542,11 @@ uploadForm.addEventListener("submit", async (event) => {
   const storagePath = `tracks/${user.uid}/${filename}`;
   const storageRef = ref(storage, storagePath);
 
+  let slowUploadTimer;
+
   try {
+    progressText.textContent = "Preparando música…";
+
     const task = uploadBytesResumable(storageRef, file, {
       contentType: file.type || "audio/mpeg",
       customMetadata: {
@@ -553,13 +557,25 @@ uploadForm.addEventListener("submit", async (event) => {
       }
     });
 
+    slowUploadTimer = setTimeout(() => {
+      if (task.snapshot.bytesTransferred === 0) {
+        progressText.textContent = "A conexão está demorando para iniciar. Aguarde…";
+      }
+    }, 10000);
+
     const downloadURL = await new Promise((resolve, reject) => {
       task.on(
         "state_changed",
         (snapshot) => {
+          if (snapshot.bytesTransferred > 0 && slowUploadTimer) {
+            clearTimeout(slowUploadTimer);
+            slowUploadTimer = null;
+          }
           const pct = Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100);
           progress.style.width = `${pct}%`;
-          progressText.textContent = `Enviando… ${pct}%`;
+          const sentMB = (snapshot.bytesTransferred / (1024 * 1024)).toFixed(1);
+          const totalMB = (snapshot.totalBytes / (1024 * 1024)).toFixed(1);
+          progressText.textContent = `Adicionando… ${pct}% • ${sentMB} de ${totalMB} MB`;
         },
         reject,
         async () => resolve(await getDownloadURL(task.snapshot.ref))
@@ -591,10 +607,11 @@ uploadForm.addEventListener("submit", async (event) => {
     uploadModal.close();
   } catch (error) {
     console.error(error);
-    showToast("Falha no upload. Confira o Storage, autenticação e regras.", "error");
+    showToast("Não foi possível adicionar a música. Tente novamente.", "error");
   } finally {
+    if (slowUploadTimer) clearTimeout(slowUploadTimer);
     submit.disabled = false;
-    submit.textContent = "Enviar para o Firebase";
+    submit.textContent = "Adicionar música";
   }
 });
 
