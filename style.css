@@ -364,8 +364,18 @@ input[type="range"]:hover::-webkit-slider-thumb { opacity: 1; }
 .drop-icon { width: 42px; height: 42px; border-radius: 50%; display: grid; place-items: center; background: var(--red); font-size: 19px; }
 .dropzone small { color: #777; }
 .upload-progress { display: grid; gap: 7px; }
-.upload-progress-bar { height: 6px; background: #282828; border-radius: 99px; overflow: hidden; }
-.upload-progress-bar span { display: block; width: 0; height: 100%; background: var(--red); }
+.upload-progress-bar { position: relative; height: 6px; background: #282828; border-radius: 99px; overflow: hidden; }
+.upload-progress-bar span { display: block; width: 0; height: 100%; background: var(--red); transition: width .18s ease; }
+.upload-progress-bar.pending span {
+  width: 28% !important;
+  position: absolute;
+  left: -30%;
+  animation: uploadPending 1.1s ease-in-out infinite;
+}
+@keyframes uploadPending {
+  0% { left: -30%; }
+  100% { left: 105%; }
+}
 .upload-progress small { color: #999; }
 .text-btn { border: 0; background: transparent; color: #c3c3c3; cursor: pointer; font-weight: 700; }
 .text-btn:hover { color: white; text-decoration: underline; }
@@ -447,4 +457,60 @@ input[type="range"]:hover::-webkit-slider-thumb { opacity: 1; }
   .player { grid-template-columns: 1fr; }
   .now-playing { grid-column: 1 / -1; }
   .track-count { display: none; }
+}
+
+
+/* Capa do álbum */
+.cover-picker {
+  min-height: 82px;
+  border: 1px solid #303030;
+  border-radius: 12px;
+  background: #161616;
+  display: grid !important;
+  grid-template-columns: 58px minmax(0, 1fr);
+  align-items: center;
+  gap: 13px !important;
+  padding: 11px;
+  cursor: pointer;
+}
+.cover-picker:hover { border-color: #555; }
+.cover-picker input { display: none; }
+.cover-preview {
+  width: 58px;
+  height: 58px;
+  border-radius: 7px;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(145deg, #4e0006, #170002);
+  color: #ff5965;
+  font-size: 22px;
+  background-size: cover;
+  background-position: center;
+}
+.cover-picker-copy { min-width: 0; display: grid; gap: 5px; }
+.cover-picker-copy strong {
+  color: #f1f1f1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cover-picker-copy small { color: #777; font-weight: 500; }
+
+.cover,
+.player-cover {
+  overflow: hidden;
+  background-size: cover;
+  background-position: center;
+}
+.cover img,
+.player-cover img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+}
+
+.asset-loading {
+  opacity: .72;
 }

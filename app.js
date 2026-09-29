@@ -11,21 +11,18 @@ import {
 import {
   getFirestore,
   collection,
-  addDoc,
   deleteDoc,
   doc,
   onSnapshot,
   orderBy,
   query,
-  serverTimestamp
+  serverTimestamp,
+  setDoc,
+  updateDoc,
+  writeBatch,
+  getDocs,
+  Bytes
 } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js";
-import {
-  getStorage,
-  ref,
-  uploadBytesResumable,
-  getDownloadURL,
-  deleteObject
-} from "https://www.gstatic.com/firebasejs/12.19.0/firebase-storage.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBEiPrY_xJTgoUAmFVW88Zy7YCDF9zaUho",
@@ -40,13 +37,18 @@ const firebaseConfig = {
 const firebaseApp = initializeApp(firebaseConfig);
 const auth = getAuth(firebaseApp);
 const db = getFirestore(firebaseApp);
-const storage = getStorage(firebaseApp);
 
 setPersistence(auth, browserLocalPersistence).catch((error) => {
   console.warn("Não foi possível ativar a persistência local da sessão:", error);
 });
 
-// ---------- DOM ----------
+// Cada documento do Firestore tem limite de 1 MiB.
+// 512 KiB deixa margem para os demais campos e overhead do documento.
+const CHUNK_SIZE = 512 * 1024;
+const CHUNKS_PER_BATCH = 6;
+const MAX_AUDIO_SIZE = 25 * 1024 * 1024;
+const MAX_COVER_SIZE = 10 * 1024 * 1024;
+
 const $ = (selector) => document.querySelector(selector);
 const audio = $("#audio");
 const trackList = $("#trackList");
@@ -73,6 +75,13 @@ const catalogTitle = $("#catalogTitle");
 const trackCount = $("#trackCount");
 const toast = $("#toast");
 
+const audioFile = $("#audioFile");
+const coverFile = $("#coverFile");
+const dropzone = $("#dropzone");
+const fileLabel = $("#fileLabel");
+const coverFileLabel = $("#coverFileLabel");
+const coverPreview = $("#coverPreview");
+
 let tracks = [];
 let filteredTracks = [];
 let currentTrack = null;
@@ -83,8 +92,14 @@ let repeat = false;
 let shuffle = false;
 let toastTimer = null;
 let selectedDurationSeconds = 0;
+let localCoverPreviewUrl = null;
 
 const likedIds = new Set(JSON.parse(localStorage.getItem("redbeat-liked") || "[]"));
+const coverUrlCache = new Map();
+const audioUrlCache = new Map();
+const coverLoading = new Map();
+const audioLoading = new Map();
+
 audio.volume = Number(volumeBar.value);
 
 // ---------- helpers ----------
@@ -97,13 +112,22 @@ function initials(value = "R") {
   return clean ? clean.charAt(0).toUpperCase() : "R";
 }
 
+function escapeHtml(value) {
+  return safeText(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
 function showToast(message, type = "success") {
   toast.textContent = message;
   toast.className = `toast show${type === "error" ? " error" : ""}`;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => {
     toast.className = "toast";
-  }, 3200);
+  }, 3600);
 }
 
 function formatTime(seconds) {
@@ -111,6 +135,15 @@ function formatTime(seconds) {
   const min = Math.floor(seconds / 60);
   const sec = Math.floor(seconds % 60).toString().padStart(2, "0");
   return `${min}:${sec}`;
+}
+
+function formatDate(timestamp) {
+  if (!timestamp?.toDate) return "agora";
+  return new Intl.DateTimeFormat("pt-BR", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric"
+  }).format(timestamp.toDate());
 }
 
 function readAudioDuration(file) {
@@ -141,15 +174,6 @@ function readAudioDuration(file) {
   });
 }
 
-function formatDate(timestamp) {
-  if (!timestamp?.toDate) return "agora";
-  return new Intl.DateTimeFormat("pt-BR", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric"
-  }).format(timestamp.toDate());
-}
-
 function persistLikes() {
   localStorage.setItem("redbeat-liked", JSON.stringify([...likedIds]));
 }
@@ -160,10 +184,14 @@ function isOwner(track) {
 
 function getVisibleTracks() {
   const term = searchInput.value.trim().toLowerCase();
+
   return tracks.filter((track) => {
+    if (track.status === "uploading") return false;
+
     const matchesTerm = !term || [track.title, track.artist, track.album, track.genre]
       .some((field) => safeText(field).toLowerCase().includes(term));
     const matchesLiked = !likedOnly || likedIds.has(track.id);
+
     return matchesTerm && matchesLiked;
   });
 }
@@ -172,12 +200,276 @@ function syncCurrentIndex() {
   currentIndex = filteredTracks.findIndex((track) => track.id === currentTrack?.id);
 }
 
+function updateProgressBackground(input, percentage) {
+  input.style.background = `linear-gradient(to right, #e50914 0%, #e50914 ${percentage}%, #393939 ${percentage}%, #393939 100%)`;
+}
+
+function createTrackRef() {
+  return doc(collection(db, "tracks"));
+}
+
+function byteSizeLabel(bytes) {
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// ---------- compressão ----------
+async function gzipBlob(blob) {
+  if ("CompressionStream" in globalThis) {
+    const stream = blob.stream().pipeThrough(new CompressionStream("gzip"));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  }
+
+  const { gzip } = await import("https://cdn.jsdelivr.net/npm/pako@2.1.0/+esm");
+  return gzip(new Uint8Array(await blob.arrayBuffer()));
+}
+
+async function gunzipBytes(bytes) {
+  if ("DecompressionStream" in globalThis) {
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  }
+
+  const { ungzip } = await import("https://cdn.jsdelivr.net/npm/pako@2.1.0/+esm");
+  return ungzip(bytes);
+}
+
+async function loadImageSource(file) {
+  if ("createImageBitmap" in globalThis) {
+    const bitmap = await createImageBitmap(file);
+    return {
+      width: bitmap.width,
+      height: bitmap.height,
+      draw(ctx, width, height) {
+        ctx.drawImage(bitmap, 0, 0, width, height);
+      },
+      close() {
+        bitmap.close?.();
+      }
+    };
+  }
+
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    const image = new Image();
+    image.decoding = "async";
+    image.src = objectUrl;
+    await image.decode();
+
+    return {
+      width: image.naturalWidth,
+      height: image.naturalHeight,
+      draw(ctx, width, height) {
+        ctx.drawImage(image, 0, 0, width, height);
+      },
+      close() {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+  } catch (error) {
+    URL.revokeObjectURL(objectUrl);
+    throw error;
+  }
+}
+
+async function optimizeCover(file) {
+  const source = await loadImageSource(file);
+
+  try {
+    const maxSide = 720;
+    const ratio = Math.min(1, maxSide / Math.max(source.width, source.height));
+    const width = Math.max(1, Math.round(source.width * ratio));
+    const height = Math.max(1, Math.round(source.height * ratio));
+
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+
+    const ctx = canvas.getContext("2d", { alpha: false });
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    source.draw(ctx, width, height);
+
+    const blob = await new Promise((resolve, reject) => {
+      canvas.toBlob(
+        (result) => result ? resolve(result) : reject(new Error("Não foi possível otimizar a capa.")),
+        "image/webp",
+        0.78
+      );
+    });
+
+    return blob;
+  } finally {
+    source.close();
+  }
+}
+
+// ---------- Firestore binário em blocos ----------
+function splitBytes(bytes) {
+  const chunks = [];
+  for (let offset = 0; offset < bytes.byteLength; offset += CHUNK_SIZE) {
+    chunks.push(bytes.slice(offset, Math.min(offset + CHUNK_SIZE, bytes.byteLength)));
+  }
+  return chunks;
+}
+
+async function writeChunks(trackRef, subcollectionName, bytes, onCommittedBytes) {
+  const chunks = splitBytes(bytes);
+  const chunksCollection = collection(trackRef, subcollectionName);
+
+  for (let start = 0; start < chunks.length; start += CHUNKS_PER_BATCH) {
+    const batch = writeBatch(db);
+    const end = Math.min(start + CHUNKS_PER_BATCH, chunks.length);
+    let batchBytes = 0;
+
+    for (let index = start; index < end; index++) {
+      const chunk = chunks[index];
+      const chunkRef = doc(chunksCollection, String(index).padStart(6, "0"));
+
+      batch.set(chunkRef, {
+        index,
+        byteLength: chunk.byteLength,
+        data: Bytes.fromUint8Array(chunk)
+      });
+
+      batchBytes += chunk.byteLength;
+    }
+
+    await batch.commit();
+    onCommittedBytes?.(batchBytes);
+  }
+
+  return chunks.length;
+}
+
+async function readChunks(trackRef, subcollectionName) {
+  const chunksSnapshot = await getDocs(
+    query(collection(trackRef, subcollectionName), orderBy("index", "asc"))
+  );
+
+  if (chunksSnapshot.empty) {
+    throw new Error(`Arquivo sem blocos: ${subcollectionName}`);
+  }
+
+  const chunks = chunksSnapshot.docs.map((snapshot) => snapshot.data().data.toUint8Array());
+  const totalBytes = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+  const output = new Uint8Array(totalBytes);
+
+  let offset = 0;
+  for (const chunk of chunks) {
+    output.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  return output;
+}
+
+async function deleteChunks(trackRef, subcollectionName) {
+  const snapshot = await getDocs(collection(trackRef, subcollectionName));
+  const docs = snapshot.docs;
+
+  for (let start = 0; start < docs.length; start += 300) {
+    const batch = writeBatch(db);
+    for (const chunkDoc of docs.slice(start, start + 300)) {
+      batch.delete(chunkDoc.ref);
+    }
+    await batch.commit();
+  }
+}
+
+async function cleanupPartialTrack(trackRef) {
+  try { await deleteChunks(trackRef, "audioChunks"); } catch (error) { console.warn(error); }
+  try { await deleteChunks(trackRef, "coverChunks"); } catch (error) { console.warn(error); }
+  try { await deleteDoc(trackRef); } catch (error) { console.warn(error); }
+}
+
+async function buildAssetUrl(track, type) {
+  const isAudio = type === "audio";
+  const cache = isAudio ? audioUrlCache : coverUrlCache;
+  const loading = isAudio ? audioLoading : coverLoading;
+
+  if (cache.has(track.id)) return cache.get(track.id);
+  if (loading.has(track.id)) return loading.get(track.id);
+
+  const promise = (async () => {
+    const trackRef = doc(db, "tracks", track.id);
+    const subcollectionName = isAudio ? "audioChunks" : "coverChunks";
+    const mime = isAudio ? (track.audioMime || "audio/mpeg") : (track.coverMime || "image/webp");
+    const compression = isAudio ? track.audioCompression : track.coverCompression;
+
+    const storedBytes = await readChunks(trackRef, subcollectionName);
+    const rawBytes = compression === "gzip"
+      ? await gunzipBytes(storedBytes)
+      : storedBytes;
+
+    const url = URL.createObjectURL(new Blob([rawBytes], { type: mime }));
+    cache.set(track.id, url);
+    return url;
+  })();
+
+  loading.set(track.id, promise);
+
+  try {
+    return await promise;
+  } finally {
+    loading.delete(track.id);
+  }
+}
+
+function releaseCachedTrack(trackId) {
+  const audioUrl = audioUrlCache.get(trackId);
+  const coverUrl = coverUrlCache.get(trackId);
+
+  if (audioUrl) URL.revokeObjectURL(audioUrl);
+  if (coverUrl) URL.revokeObjectURL(coverUrl);
+
+  audioUrlCache.delete(trackId);
+  coverUrlCache.delete(trackId);
+}
+
+async function hydrateVisibleCovers() {
+  const visible = getVisibleTracks();
+
+  for (const track of visible) {
+    const element = trackList.querySelector(`[data-cover-id="${CSS.escape(track.id)}"]`);
+    if (!element || !track.coverChunks) continue;
+
+    try {
+      const url = await buildAssetUrl(track, "cover");
+      const currentElement = trackList.querySelector(`[data-cover-id="${CSS.escape(track.id)}"]`);
+      if (!currentElement) continue;
+
+      currentElement.textContent = "";
+      currentElement.style.backgroundImage = `url("${url}")`;
+    } catch (error) {
+      console.warn("Não foi possível abrir a capa:", error);
+    }
+  }
+}
+
+async function hydratePlayerCover(track) {
+  if (!track?.coverChunks) return;
+
+  try {
+    const url = await buildAssetUrl(track, "cover");
+    if (currentTrack?.id !== track.id) return;
+
+    playerCover.textContent = "";
+    playerCover.style.backgroundImage = `url("${url}")`;
+  } catch (error) {
+    console.warn("Não foi possível abrir a capa no player:", error);
+  }
+}
+
 // ---------- rendering ----------
 function renderTracks() {
   filteredTracks = getVisibleTracks();
   syncCurrentIndex();
 
-  catalogTitle.textContent = likedOnly ? "Músicas curtidas" : (searchInput.value ? "Resultados" : "Seu catálogo");
+  catalogTitle.textContent = likedOnly
+    ? "Músicas curtidas"
+    : (searchInput.value ? "Resultados" : "Seu catálogo");
+
   trackCount.textContent = `${filteredTracks.length} ${filteredTracks.length === 1 ? "música" : "músicas"}`;
 
   if (!filteredTracks.length) {
@@ -191,7 +483,7 @@ function renderTracks() {
       <div class="empty-state">
         <div class="empty-icon">♫</div>
         <h3>${text}</h3>
-        <p>${tracks.length ? "Tente outra busca ou filtro." : "Entre na conta e envie o primeiro MP3 para começar."}</p>
+        <p>${tracks.length ? "Tente outra busca ou filtro." : "Entre na conta e adicione a primeira música."}</p>
         ${tracks.length ? "" : '<button class="primary-btn" data-action="open-upload">Adicionar música</button>'}
       </div>
     `;
@@ -201,14 +493,15 @@ function renderTracks() {
   trackList.innerHTML = filteredTracks.map((track, index) => {
     const liked = likedIds.has(track.id);
     const active = currentTrack?.id === track.id;
+
     return `
       <article class="track-row ${active ? "active" : ""}" data-id="${track.id}">
         <div class="track-index">
           <span class="row-index">${index + 1}</span>
-          <button class="row-play" data-action="play" aria-label="Tocar ${safeText(track.title)}">${active && !audio.paused ? "Ⅱ" : "▶"}</button>
+          <button class="row-play" data-action="play" aria-label="Tocar ${escapeHtml(track.title)}">${active && !audio.paused ? "Ⅱ" : "▶"}</button>
         </div>
         <div class="title-cell">
-          <div class="cover">${initials(track.title)}</div>
+          <div class="cover" data-cover-id="${track.id}">${initials(track.title)}</div>
           <div class="title-stack">
             <strong>${escapeHtml(track.title)}</strong>
             <span>${escapeHtml(track.artist)}</span>
@@ -222,21 +515,15 @@ function renderTracks() {
       </article>
     `;
   }).join("");
-}
 
-function escapeHtml(value) {
-  return safeText(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
+  hydrateVisibleCovers();
 }
 
 function updatePlayerUI() {
   if (!currentTrack) {
     playerTitle.textContent = "Nenhuma música";
     playerArtist.textContent = "Escolha uma faixa do catálogo";
+    playerCover.style.backgroundImage = "";
     playerCover.textContent = "R";
     playerLike.textContent = "♡";
     playerLike.classList.remove("liked");
@@ -246,38 +533,48 @@ function updatePlayerUI() {
 
   playerTitle.textContent = currentTrack.title;
   playerArtist.textContent = currentTrack.artist;
-  playerCover.textContent = initials(currentTrack.title);
+
+  const cachedCover = coverUrlCache.get(currentTrack.id);
+  if (cachedCover) {
+    playerCover.textContent = "";
+    playerCover.style.backgroundImage = `url("${cachedCover}")`;
+  } else {
+    playerCover.style.backgroundImage = "";
+    playerCover.textContent = initials(currentTrack.title);
+    hydratePlayerCover(currentTrack);
+  }
+
   const liked = likedIds.has(currentTrack.id);
   playerLike.textContent = liked ? "♥" : "♡";
   playerLike.classList.toggle("liked", liked);
   playBtn.textContent = audio.paused ? "▶" : "Ⅱ";
 }
 
-function updateProgressBackground(input, percentage) {
-  input.style.background = `linear-gradient(to right, #e50914 0%, #e50914 ${percentage}%, #393939 ${percentage}%, #393939 100%)`;
-}
-
-// ---------- catalog realtime ----------
+// ---------- catálogo realtime ----------
 const tracksQuery = query(collection(db, "tracks"), orderBy("createdAt", "desc"));
 
 onSnapshot(
   tracksQuery,
   (snapshot) => {
-    tracks = snapshot.docs.map((snap) => ({ id: snap.id, ...snap.data() }));
+    tracks = snapshot.docs
+      .map((snap) => ({ id: snap.id, ...snap.data() }))
+      .filter((track) => track.status !== "uploading");
+
     if (currentTrack) {
       const refreshed = tracks.find((track) => track.id === currentTrack.id);
       if (refreshed) currentTrack = refreshed;
     }
+
     renderTracks();
     updatePlayerUI();
   },
   (error) => {
     console.error(error);
-    showToast("Não foi possível ler o catálogo. Confira as regras do Firestore.", "error");
+    showToast("Não foi possível carregar o catálogo. Confira as regras do banco.", "error");
   }
 );
 
-// ---------- auth ----------
+// ---------- autenticação ----------
 onAuthStateChanged(auth, (user) => {
   if (user) {
     loginBtn.classList.add("hidden");
@@ -295,14 +592,16 @@ onAuthStateChanged(auth, (user) => {
 
 function openAuth() {
   const warning = $("#authEnvironmentWarning");
+
   if (warning) {
     if (location.protocol === "file:") {
-      warning.textContent = "Abra o projeto por http://localhost ou por uma hospedagem HTTPS. O login pode falhar quando o index.html é aberto diretamente como arquivo.";
+      warning.textContent = "Abra o projeto por http://localhost ou por uma hospedagem HTTPS.";
       warning.classList.remove("hidden");
     } else {
       warning.classList.add("hidden");
     }
   }
+
   authModal.showModal();
   requestAnimationFrame(() => $("#emailInput")?.focus());
 }
@@ -310,6 +609,7 @@ function openAuth() {
 function setAuthMode(mode) {
   authMode = mode;
   const isLogin = mode === "login";
+
   $("#authTitle").textContent = isLogin ? "Entrar" : "Criar conta";
   $("#authCopy").textContent = isLogin
     ? "Entre para adicionar e gerenciar suas músicas."
@@ -327,10 +627,11 @@ authForm.addEventListener("submit", async (event) => {
   const password = $("#passwordInput").value;
   const errorBox = $("#authError");
   const submitButton = $("#authSubmit");
+
   errorBox.classList.add("hidden");
 
   if (location.protocol === "file:") {
-    errorBox.textContent = "Abra o projeto usando http://localhost ou uma hospedagem HTTPS. Não use file:// para autenticação.";
+    errorBox.textContent = "Abra o projeto usando http://localhost ou uma hospedagem HTTPS.";
     errorBox.classList.remove("hidden");
     return;
   }
@@ -346,10 +647,11 @@ authForm.addEventListener("submit", async (event) => {
       await createUserWithEmailAndPassword(auth, email, password);
       showToast("Conta criada e sessão iniciada.");
     }
+
     authForm.reset();
     authModal.close();
   } catch (error) {
-    console.error("Firebase Auth:", error.code, error.message);
+    console.error("Auth:", error.code, error.message);
     errorBox.textContent = friendlyAuthError(error.code);
     errorBox.classList.remove("hidden");
   } finally {
@@ -370,14 +672,13 @@ function friendlyAuthError(code = "") {
     "auth/missing-password": "Digite a senha.",
     "auth/user-disabled": "Esta conta foi desativada.",
     "auth/too-many-requests": "Muitas tentativas. Aguarde alguns minutos e tente novamente.",
-    "auth/network-request-failed": "Falha de rede. Verifique a conexão e confirme que o projeto está sendo aberto por http:// ou https://.",
+    "auth/network-request-failed": "Falha de rede. Verifique sua conexão.",
     "auth/operation-not-allowed": "O cadastro por e-mail e senha não está disponível no momento.",
     "auth/configuration-not-found": "O sistema de cadastro e login ainda não está disponível.",
-    "auth/unauthorized-domain": "Este endereço não está autorizado para realizar login.",
-    "auth/app-not-authorized": "Este aplicativo não está autorizado a realizar login.",
-    "auth/invalid-api-key": "O serviço de login está indisponível devido a uma configuração inválida."
+    "auth/unauthorized-domain": "Este endereço não está autorizado para realizar login."
   };
-  return messages[code] || `Não foi possível autenticar (${code || "erro desconhecido"}). Abra o console do navegador para ver os detalhes.`;
+
+  return messages[code] || `Não foi possível autenticar (${code || "erro desconhecido"}).`;
 }
 
 $("#toggleAuthMode").addEventListener("click", () => {
@@ -386,6 +687,7 @@ $("#toggleAuthMode").addEventListener("click", () => {
 
 loginBtn.addEventListener("click", openAuth);
 profileBtn.addEventListener("click", () => accountModal.showModal());
+
 $("#logoutBtn").addEventListener("click", async () => {
   await signOut(auth);
   accountModal.close();
@@ -399,13 +701,11 @@ function requireUserAndOpenUpload() {
     openAuth();
     return;
   }
+
   uploadModal.showModal();
 }
 
-["#openUpload"].forEach((selector) => {
-  const element = $(selector);
-  if (element) element.addEventListener("click", requireUserAndOpenUpload);
-});
+$("#openUpload")?.addEventListener("click", requireUserAndOpenUpload);
 
 trackList.addEventListener("click", (event) => {
   if (event.target.matches('[data-action="open-upload"]')) {
@@ -415,6 +715,7 @@ trackList.addEventListener("click", (event) => {
 
   const row = event.target.closest(".track-row");
   if (!row) return;
+
   const track = tracks.find((item) => item.id === row.dataset.id);
   if (!track) return;
 
@@ -424,11 +725,11 @@ trackList.addEventListener("click", (event) => {
     toggleLike(track.id);
   } else if (action === "menu") {
     if (isOwner(track)) deleteTrack(track);
-    else showToast("Somente quem enviou esta música pode excluí-la.");
+    else showToast("Somente quem adicionou esta música pode excluí-la.");
   } else if (action === "play") {
     if (currentTrack?.id === track.id && !audio.paused) {
       audio.pause();
-    } else if (currentTrack?.id === track.id) {
+    } else if (currentTrack?.id === track.id && audio.src) {
       audio.play().catch(handlePlayError);
     } else {
       playTrack(track);
@@ -438,13 +739,10 @@ trackList.addEventListener("click", (event) => {
   }
 });
 
-const audioFile = $("#audioFile");
-const dropzone = $("#dropzone");
-const fileLabel = $("#fileLabel");
-
 audioFile.addEventListener("change", async () => {
   const file = audioFile.files?.[0];
-  fileLabel.textContent = file ? file.name : "Clique ou arraste um MP3";
+
+  fileLabel.textContent = file ? file.name : "Clique ou arraste um arquivo de áudio";
   selectedDurationSeconds = 0;
   $("#trackDuration").value = file ? "Lendo duração…" : "Selecione um arquivo";
 
@@ -464,21 +762,45 @@ audioFile.addEventListener("change", async () => {
   }
 });
 
+coverFile.addEventListener("change", () => {
+  const file = coverFile.files?.[0];
+
+  if (localCoverPreviewUrl) {
+    URL.revokeObjectURL(localCoverPreviewUrl);
+    localCoverPreviewUrl = null;
+  }
+
+  if (!file) {
+    coverFileLabel.textContent = "Selecionar capa do álbum";
+    coverPreview.style.backgroundImage = "";
+    coverPreview.textContent = "▧";
+    return;
+  }
+
+  coverFileLabel.textContent = file.name;
+  localCoverPreviewUrl = URL.createObjectURL(file);
+  coverPreview.textContent = "";
+  coverPreview.style.backgroundImage = `url("${localCoverPreviewUrl}")`;
+});
+
 ["dragenter", "dragover"].forEach((type) => {
   dropzone.addEventListener(type, (event) => {
     event.preventDefault();
     dropzone.classList.add("dragging");
   });
 });
+
 ["dragleave", "drop"].forEach((type) => {
   dropzone.addEventListener(type, (event) => {
     event.preventDefault();
     dropzone.classList.remove("dragging");
   });
 });
+
 dropzone.addEventListener("drop", (event) => {
   const file = event.dataTransfer.files?.[0];
   if (!file) return;
+
   const transfer = new DataTransfer();
   transfer.items.add(file);
   audioFile.files = transfer.files;
@@ -495,121 +817,179 @@ uploadForm.addEventListener("submit", async (event) => {
     return;
   }
 
-  const file = audioFile.files?.[0];
+  const musicFile = audioFile.files?.[0];
+  const imageFile = coverFile.files?.[0];
   const title = $("#trackTitle").value.trim();
   const artist = $("#trackArtist").value.trim();
   const album = $("#trackAlbum").value.trim();
   const genre = $("#trackGenre").value.trim();
 
-  if (!file || !title || !artist || !album || !genre) {
-    showToast("Selecione um arquivo e preencha título, artista, álbum e gênero.", "error");
+  if (!musicFile || !imageFile || !title || !artist || !album || !genre) {
+    showToast("Preencha os dados e selecione o áudio e a capa.", "error");
     return;
   }
 
-  if (file.size > 25 * 1024 * 1024) {
-    showToast("O arquivo excede 25 MB.", "error");
+  if (musicFile.size > MAX_AUDIO_SIZE) {
+    showToast("O áudio excede 25 MB.", "error");
     return;
   }
 
-  const allowed = file.type.startsWith("audio/") || /\.(mp3|m4a|aac|wav|ogg)$/i.test(file.name);
-  if (!allowed) {
+  if (imageFile.size > MAX_COVER_SIZE) {
+    showToast("A imagem da capa excede 10 MB.", "error");
+    return;
+  }
+
+  const isAudio = musicFile.type.startsWith("audio/") || /\.(mp3|m4a|aac|wav|ogg)$/i.test(musicFile.name);
+  if (!isAudio) {
     showToast("Selecione um arquivo de áudio válido.", "error");
+    return;
+  }
+
+  if (!imageFile.type.startsWith("image/")) {
+    showToast("Selecione uma imagem válida para a capa.", "error");
     return;
   }
 
   if (!selectedDurationSeconds) {
     try {
-      selectedDurationSeconds = await readAudioDuration(file);
+      selectedDurationSeconds = await readAudioDuration(musicFile);
       $("#trackDuration").value = formatTime(selectedDurationSeconds);
     } catch (error) {
       console.error(error);
-      showToast("Não foi possível obter a duração da música. Tente outro arquivo.", "error");
+      showToast("Não foi possível obter a duração da música.", "error");
       return;
     }
   }
 
   const submit = $("#uploadSubmit");
   const progressWrap = $("#uploadProgressWrap");
+  const progressBar = progressWrap.querySelector(".upload-progress-bar");
   const progress = $("#uploadProgress");
   const progressText = $("#uploadProgressText");
+  const trackRef = createTrackRef();
 
   submit.disabled = true;
   submit.textContent = "Adicionando…";
   progressWrap.classList.remove("hidden");
+  progressBar.classList.add("pending");
+  progress.style.width = "0%";
 
-  const ext = file.name.split(".").pop()?.toLowerCase() || "mp3";
-  const filename = `${Date.now()}-${crypto.randomUUID()}.${ext}`;
-  const storagePath = `tracks/${user.uid}/${filename}`;
-  const storageRef = ref(storage, storagePath);
-
-  let slowUploadTimer;
+  let parentCreated = false;
 
   try {
-    progressText.textContent = "Preparando música…";
+    progressText.textContent = "Otimizando capa…";
+    const optimizedCover = await optimizeCover(imageFile);
 
-    const task = uploadBytesResumable(storageRef, file, {
-      contentType: file.type || "audio/mpeg",
-      customMetadata: {
-        ownerId: user.uid,
-        originalName: file.name,
-        genre,
-        duration: String(selectedDurationSeconds)
-      }
-    });
+    progressText.textContent = "Comprimindo capa…";
+    const compressedCover = await gzipBlob(optimizedCover);
 
-    slowUploadTimer = setTimeout(() => {
-      if (task.snapshot.bytesTransferred === 0) {
-        progressText.textContent = "A conexão está demorando para iniciar. Aguarde…";
-      }
-    }, 10000);
+    progressText.textContent = "Comprimindo áudio…";
+    const compressedAudio = await gzipBlob(musicFile);
 
-    const downloadURL = await new Promise((resolve, reject) => {
-      task.on(
-        "state_changed",
-        (snapshot) => {
-          if (snapshot.bytesTransferred > 0 && slowUploadTimer) {
-            clearTimeout(slowUploadTimer);
-            slowUploadTimer = null;
-          }
-          const pct = Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100);
-          progress.style.width = `${pct}%`;
-          const sentMB = (snapshot.bytesTransferred / (1024 * 1024)).toFixed(1);
-          const totalMB = (snapshot.totalBytes / (1024 * 1024)).toFixed(1);
-          progressText.textContent = `Adicionando… ${pct}% • ${sentMB} de ${totalMB} MB`;
-        },
-        reject,
-        async () => resolve(await getDownloadURL(task.snapshot.ref))
-      );
-    });
-
-    await addDoc(collection(db, "tracks"), {
+    await setDoc(trackRef, {
       title,
       artist,
       album,
       genre,
       duration: selectedDurationSeconds,
       durationFormatted: formatTime(selectedDurationSeconds),
-      audioUrl: downloadURL,
-      storagePath,
       ownerId: user.uid,
       ownerEmail: user.email || "",
-      originalName: file.name,
+      originalName: musicFile.name,
+
+      audioMime: musicFile.type || "audio/mpeg",
+      audioCompression: "gzip",
+      audioOriginalSize: musicFile.size,
+      audioCompressedSize: compressedAudio.byteLength,
+
+      coverMime: optimizedCover.type || "image/webp",
+      coverCompression: "gzip",
+      coverOriginalSize: imageFile.size,
+      coverOptimizedSize: optimizedCover.size,
+      coverCompressedSize: compressedCover.byteLength,
+
+      status: "uploading",
       createdAt: serverTimestamp()
     });
 
-    showToast("Música adicionada ao catálogo.");
+    parentCreated = true;
+
+    const totalToStore = compressedAudio.byteLength + compressedCover.byteLength;
+    let committed = 0;
+
+    const updateProgress = (bytes) => {
+      committed += bytes;
+      const pct = totalToStore ? Math.min(99, Math.round((committed / totalToStore) * 100)) : 0;
+      progressBar.classList.remove("pending");
+      progress.style.width = `${pct}%`;
+      progressText.textContent =
+        `Salvando… ${pct}% • ${byteSizeLabel(committed)} de ${byteSizeLabel(totalToStore)}`;
+    };
+
+    const coverChunks = await writeChunks(
+      trackRef,
+      "coverChunks",
+      compressedCover,
+      updateProgress
+    );
+
+    const audioChunks = await writeChunks(
+      trackRef,
+      "audioChunks",
+      compressedAudio,
+      updateProgress
+    );
+
+    await updateDoc(trackRef, {
+      audioChunks,
+      coverChunks,
+      status: "ready",
+      updatedAt: serverTimestamp()
+    });
+
+    progress.style.width = "100%";
+    progressText.textContent = "Música adicionada.";
+
+    showToast("Música adicionada.");
     uploadForm.reset();
     selectedDurationSeconds = 0;
     $("#trackDuration").value = "Selecione um arquivo";
-    fileLabel.textContent = "Clique ou arraste um MP3";
-    progress.style.width = "0%";
-    progressWrap.classList.add("hidden");
-    uploadModal.close();
+    fileLabel.textContent = "Clique ou arraste um arquivo de áudio";
+    coverFileLabel.textContent = "Selecionar capa do álbum";
+    coverPreview.style.backgroundImage = "";
+    coverPreview.textContent = "▧";
+
+    if (localCoverPreviewUrl) {
+      URL.revokeObjectURL(localCoverPreviewUrl);
+      localCoverPreviewUrl = null;
+    }
+
+    setTimeout(() => {
+      progress.style.width = "0%";
+      progressBar.classList.remove("pending");
+      progressWrap.classList.add("hidden");
+      uploadModal.close();
+    }, 250);
   } catch (error) {
-    console.error(error);
-    showToast("Não foi possível adicionar a música. Tente novamente.", "error");
+    console.error("Falha ao adicionar música:", error);
+
+    if (parentCreated) {
+      progressText.textContent = "Desfazendo envio incompleto…";
+      await cleanupPartialTrack(trackRef);
+    }
+
+    progressBar.classList.remove("pending");
+    progress.style.width = "0%";
+    progressText.textContent = "Não foi possível concluir.";
+
+    if (error?.code === "permission-denied") {
+      showToast("O banco recusou o envio. Atualize as regras do Firestore.", "error");
+    } else if (error?.code === "resource-exhausted") {
+      showToast("O limite do banco foi atingido.", "error");
+    } else {
+      showToast("Não foi possível adicionar a música.", "error");
+    }
   } finally {
-    if (slowUploadTimer) clearTimeout(slowUploadTimer);
     submit.disabled = false;
     submit.textContent = "Adicionar música";
   }
@@ -621,16 +1001,14 @@ async function deleteTrack(track) {
   const confirmed = confirm(`Excluir "${track.title}" do catálogo?`);
   if (!confirmed) return;
 
-  try {
-    await deleteDoc(doc(db, "tracks", track.id));
-    if (track.storagePath) {
-      try {
-        await deleteObject(ref(storage, track.storagePath));
-      } catch (storageError) {
-        console.warn("Metadado excluído, mas o arquivo não pôde ser removido:", storageError);
-      }
-    }
+  const trackRef = doc(db, "tracks", track.id);
 
+  try {
+    await deleteChunks(trackRef, "audioChunks");
+    await deleteChunks(trackRef, "coverChunks");
+    await deleteDoc(trackRef);
+
+    releaseCachedTrack(track.id);
     likedIds.delete(track.id);
     persistLikes();
 
@@ -652,17 +1030,33 @@ async function deleteTrack(track) {
 
 // ---------- player ----------
 async function playTrack(track) {
-  if (!track?.audioUrl) return;
+  if (!track) return;
+
   currentTrack = track;
   filteredTracks = getVisibleTracks();
   syncCurrentIndex();
 
-  audio.src = track.audioUrl;
-  audio.load();
-  updatePlayerUI();
+  playerTitle.textContent = track.title;
+  playerArtist.textContent = track.artist;
+  playBtn.textContent = "…";
   renderTracks();
+  updatePlayerUI();
 
   try {
+    let sourceUrl;
+
+    // Compatibilidade com músicas antigas que ainda tenham URL externa.
+    if (track.audioUrl) {
+      sourceUrl = track.audioUrl;
+    } else {
+      showToast("Preparando música…");
+      sourceUrl = await buildAssetUrl(track, "audio");
+    }
+
+    if (currentTrack?.id !== track.id) return;
+
+    audio.src = sourceUrl;
+    audio.load();
     await audio.play();
   } catch (error) {
     handlePlayError(error);
@@ -671,13 +1065,18 @@ async function playTrack(track) {
 
 function handlePlayError(error) {
   console.error(error);
-  showToast("O navegador bloqueou a reprodução ou o arquivo não está acessível.", "error");
+  showToast("Não foi possível abrir esta música.", "error");
 }
 
 function togglePlayback() {
   if (!currentTrack) {
     const first = filteredTracks[0] || tracks[0];
     if (first) playTrack(first);
+    return;
+  }
+
+  if (!audio.src) {
+    playTrack(currentTrack);
     return;
   }
 
@@ -694,6 +1093,7 @@ function nextTrack() {
     do {
       next = Math.floor(Math.random() * list.length);
     } while (list[next].id === currentTrack?.id);
+
     playTrack(list[next]);
     return;
   }
@@ -706,6 +1106,7 @@ function nextTrack() {
 function previousTrack() {
   const list = filteredTracks.length ? filteredTracks : tracks;
   if (!list.length) return;
+
   let index = list.findIndex((track) => track.id === currentTrack?.id);
   index = index <= 0 ? list.length - 1 : index - 1;
   playTrack(list[index]);
@@ -719,6 +1120,7 @@ $("#repeatBtn").addEventListener("click", (event) => {
   repeat = !repeat;
   event.currentTarget.classList.toggle("active", repeat);
 });
+
 $("#shuffleBtn").addEventListener("click", (event) => {
   shuffle = !shuffle;
   event.currentTarget.classList.toggle("active", shuffle);
@@ -728,19 +1130,23 @@ audio.addEventListener("play", () => {
   updatePlayerUI();
   renderTracks();
 });
+
 audio.addEventListener("pause", () => {
   updatePlayerUI();
   renderTracks();
 });
+
 audio.addEventListener("loadedmetadata", () => {
   duration.textContent = formatTime(audio.duration);
 });
+
 audio.addEventListener("timeupdate", () => {
   currentTime.textContent = formatTime(audio.currentTime);
   const pct = audio.duration ? (audio.currentTime / audio.duration) * 100 : 0;
   seekBar.value = pct;
   updateProgressBackground(seekBar, pct);
 });
+
 audio.addEventListener("ended", () => {
   if (repeat) {
     audio.currentTime = 0;
@@ -761,10 +1167,12 @@ volumeBar.addEventListener("input", () => {
   audio.volume = Number(volumeBar.value);
   updateProgressBackground(volumeBar, Number(volumeBar.value) * 100);
 });
+
 updateProgressBackground(volumeBar, Number(volumeBar.value) * 100);
 
 function toggleLike(trackId) {
   if (!trackId) return;
+
   if (likedIds.has(trackId)) likedIds.delete(trackId);
   else likedIds.add(trackId);
 
@@ -777,7 +1185,7 @@ playerLike.addEventListener("click", () => {
   if (currentTrack) toggleLike(currentTrack.id);
 });
 
-// ---------- search / filters ----------
+// ---------- busca / filtros ----------
 searchInput.addEventListener("input", () => {
   likedOnly = false;
   setActiveNav("library");
@@ -810,6 +1218,7 @@ $("#showLiked")?.addEventListener("click", showLiked);
 
 $("#playAllBtn")?.addEventListener("click", () => {
   const first = getVisibleTracks()[0] || tracks[0];
+
   if (first) playTrack(first);
   else showToast("Adicione uma música antes de tocar o catálogo.");
 });
@@ -830,8 +1239,15 @@ document.querySelectorAll("[data-close]").forEach((button) => {
       event.clientX > rect.right ||
       event.clientY < rect.top ||
       event.clientY > rect.bottom;
+
     if (clickedBackdrop) modal.close();
   });
+});
+
+window.addEventListener("beforeunload", () => {
+  for (const url of audioUrlCache.values()) URL.revokeObjectURL(url);
+  for (const url of coverUrlCache.values()) URL.revokeObjectURL(url);
+  if (localCoverPreviewUrl) URL.revokeObjectURL(localCoverPreviewUrl);
 });
 
 setAuthMode("login");

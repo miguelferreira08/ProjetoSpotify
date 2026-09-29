@@ -110,10 +110,19 @@
       <p class="modal-copy">Adicione apenas arquivos que você tenha direito de armazenar e reproduzir.</p>
 
       <label class="dropzone" id="dropzone">
-        <input id="audioFile" name="audio" type="file" accept="audio/mpeg,audio/mp3,audio/*" required />
+        <input id="audioFile" name="audio" type="file" accept="audio/*,.mp3,.m4a,.aac,.wav,.ogg" required />
         <span class="drop-icon">⇧</span>
-        <strong id="fileLabel">Clique ou arraste um MP3</strong>
-        <small>Limite: 25 MB</small>
+        <strong id="fileLabel">Clique ou arraste um arquivo de áudio</strong>
+        <small>Áudio: até 25 MB</small>
+      </label>
+
+      <label class="cover-picker">
+        <input id="coverFile" name="cover" type="file" accept="image/*" required />
+        <span class="cover-preview" id="coverPreview">▧</span>
+        <span class="cover-picker-copy">
+          <strong id="coverFileLabel">Selecionar capa do álbum</strong>
+          <small>JPG, PNG ou WebP • será otimizada automaticamente</small>
+        </span>
       </label>
 
       <div class="form-grid">
