@@ -14,13 +14,13 @@ import {
   deleteDoc,
   doc,
   onSnapshot,
-  orderBy,
   query,
+  where,
   serverTimestamp,
   setDoc,
   updateDoc,
   writeBatch,
-  getDocs,
+  getDoc,
   Bytes
 } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js";
 
@@ -305,6 +305,8 @@ async function optimizeCover(file) {
 }
 
 // ---------- Firestore binário em blocos ----------
+// Os blocos também ficam na coleção `tracks`. Isso evita depender de
+// permissões de subcoleções e mantém todos os dados no mesmo caminho.
 function splitBytes(bytes) {
   const chunks = [];
   for (let offset = 0; offset < bytes.byteLength; offset += CHUNK_SIZE) {
@@ -313,45 +315,90 @@ function splitBytes(bytes) {
   return chunks;
 }
 
-async function writeChunks(trackRef, subcollectionName, bytes, onCommittedBytes) {
-  const chunks = splitBytes(bytes);
-  const chunksCollection = collection(trackRef, subcollectionName);
+function chunkDocId(trackId, kind, index) {
+  const prefix = kind === "audio" ? "a" : "c";
+  return `${trackId}__${prefix}__${String(index).padStart(6, "0")}`;
+}
 
-  for (let start = 0; start < chunks.length; start += CHUNKS_PER_BATCH) {
+function chunkDocRef(trackId, kind, index) {
+  return doc(db, "tracks", chunkDocId(trackId, kind, index));
+}
+
+function chunkRuleCompatibilityFields(track) {
+  return {
+    title: track.title,
+    artist: track.artist,
+    album: track.album,
+    genre: track.genre,
+    duration: track.duration,
+    durationFormatted: track.durationFormatted,
+    audioUrl: "firestore-chunks",
+    ownerId: track.ownerId,
+    ownerEmail: track.ownerEmail || ""
+  };
+}
+
+async function writeChunks(track, kind, bytes, onCommittedBytes, writtenRefs) {
+  const chunks = splitBytes(bytes);
+  const compatibility = chunkRuleCompatibilityFields(track);
+  const BATCH_SIZE = 4;
+
+  for (let start = 0; start < chunks.length; start += BATCH_SIZE) {
     const batch = writeBatch(db);
-    const end = Math.min(start + CHUNKS_PER_BATCH, chunks.length);
+    const refsInBatch = [];
     let batchBytes = 0;
+    const end = Math.min(start + BATCH_SIZE, chunks.length);
 
     for (let index = start; index < end; index++) {
       const chunk = chunks[index];
-      const chunkRef = doc(chunksCollection, String(index).padStart(6, "0"));
+      const chunkRef = chunkDocRef(track.id, kind, index);
 
       batch.set(chunkRef, {
+        ...compatibility,
+        recordType: "chunk",
+        parentTrackId: track.id,
+        chunkType: kind,
         index,
         byteLength: chunk.byteLength,
-        data: Bytes.fromUint8Array(chunk)
+        data: Bytes.fromUint8Array(chunk),
+        createdAt: serverTimestamp()
       });
 
+      refsInBatch.push(chunkRef);
       batchBytes += chunk.byteLength;
     }
 
     await batch.commit();
+    writtenRefs.push(...refsInBatch);
     onCommittedBytes?.(batchBytes);
   }
 
   return chunks.length;
 }
 
-async function readChunks(trackRef, subcollectionName) {
-  const chunksSnapshot = await getDocs(
-    query(collection(trackRef, subcollectionName), orderBy("index", "asc"))
-  );
+async function readChunks(track, kind) {
+  const count = kind === "audio" ? Number(track.audioChunks || 0) : Number(track.coverChunks || 0);
+  if (!count) throw new Error(`Arquivo sem blocos: ${kind}`);
 
-  if (chunksSnapshot.empty) {
-    throw new Error(`Arquivo sem blocos: ${subcollectionName}`);
+  const chunks = new Array(count);
+  const READ_GROUP = 8;
+
+  for (let start = 0; start < count; start += READ_GROUP) {
+    const end = Math.min(start + READ_GROUP, count);
+    const indexes = Array.from({ length: end - start }, (_, offset) => start + offset);
+    const docs = await Promise.all(
+      indexes.map((index) => getDoc(chunkDocRef(track.id, kind, index)))
+    );
+
+    docs.forEach((snapshot, localIndex) => {
+      const index = indexes[localIndex];
+      if (!snapshot.exists()) throw new Error(`Bloco ausente: ${kind}/${index}`);
+      const value = snapshot.data().data;
+      if (!value?.toUint8Array) throw new Error(`Bloco inválido: ${kind}/${index}`);
+      chunks[index] = value.toUint8Array();
+    });
   }
 
-  const chunks = chunksSnapshot.docs.map((snapshot) => snapshot.data().data.toUint8Array());
   const totalBytes = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
   const output = new Uint8Array(totalBytes);
 
@@ -364,23 +411,37 @@ async function readChunks(trackRef, subcollectionName) {
   return output;
 }
 
-async function deleteChunks(trackRef, subcollectionName) {
-  const snapshot = await getDocs(collection(trackRef, subcollectionName));
-  const docs = snapshot.docs;
-
-  for (let start = 0; start < docs.length; start += 300) {
+async function deleteRefs(refs) {
+  for (let start = 0; start < refs.length; start += 300) {
     const batch = writeBatch(db);
-    for (const chunkDoc of docs.slice(start, start + 300)) {
-      batch.delete(chunkDoc.ref);
-    }
+    for (const itemRef of refs.slice(start, start + 300)) batch.delete(itemRef);
     await batch.commit();
   }
 }
 
-async function cleanupPartialTrack(trackRef) {
-  try { await deleteChunks(trackRef, "audioChunks"); } catch (error) { console.warn(error); }
-  try { await deleteChunks(trackRef, "coverChunks"); } catch (error) { console.warn(error); }
-  try { await deleteDoc(trackRef); } catch (error) { console.warn(error); }
+function refsForTrackChunks(track) {
+  const refs = [];
+  for (let index = 0; index < Number(track.audioChunks || 0); index++) {
+    refs.push(chunkDocRef(track.id, "audio", index));
+  }
+  for (let index = 0; index < Number(track.coverChunks || 0); index++) {
+    refs.push(chunkDocRef(track.id, "cover", index));
+  }
+  return refs;
+}
+
+async function cleanupPartialTrack(trackRef, writtenRefs) {
+  try {
+    await deleteRefs(writtenRefs);
+  } catch (error) {
+    console.warn("Falha ao limpar blocos parciais:", error);
+  }
+
+  try {
+    await deleteDoc(trackRef);
+  } catch (error) {
+    console.warn("Falha ao limpar música parcial:", error);
+  }
 }
 
 async function buildAssetUrl(track, type) {
@@ -392,15 +453,12 @@ async function buildAssetUrl(track, type) {
   if (loading.has(track.id)) return loading.get(track.id);
 
   const promise = (async () => {
-    const trackRef = doc(db, "tracks", track.id);
-    const subcollectionName = isAudio ? "audioChunks" : "coverChunks";
+    const kind = isAudio ? "audio" : "cover";
     const mime = isAudio ? (track.audioMime || "audio/mpeg") : (track.coverMime || "image/webp");
     const compression = isAudio ? track.audioCompression : track.coverCompression;
 
-    const storedBytes = await readChunks(trackRef, subcollectionName);
-    const rawBytes = compression === "gzip"
-      ? await gunzipBytes(storedBytes)
-      : storedBytes;
+    const storedBytes = await readChunks(track, kind);
+    const rawBytes = compression === "gzip" ? await gunzipBytes(storedBytes) : storedBytes;
 
     const url = URL.createObjectURL(new Blob([rawBytes], { type: mime }));
     cache.set(track.id, url);
@@ -551,14 +609,19 @@ function updatePlayerUI() {
 }
 
 // ---------- catálogo realtime ----------
-const tracksQuery = query(collection(db, "tracks"), orderBy("createdAt", "desc"));
+const tracksQuery = query(collection(db, "tracks"), where("recordType", "==", "track"));
 
 onSnapshot(
   tracksQuery,
   (snapshot) => {
     tracks = snapshot.docs
       .map((snap) => ({ id: snap.id, ...snap.data() }))
-      .filter((track) => track.status !== "uploading");
+      .filter((track) => track.status !== "uploading")
+      .sort((a, b) => {
+        const aTime = a.createdAt?.toMillis?.() || 0;
+        const bTime = b.createdAt?.toMillis?.() || 0;
+        return bTime - aTime;
+      });
 
     if (currentTrack) {
       const refreshed = tracks.find((track) => track.id === currentTrack.id);
@@ -875,6 +938,7 @@ uploadForm.addEventListener("submit", async (event) => {
   progress.style.width = "0%";
 
   let parentCreated = false;
+  const writtenRefs = [];
 
   try {
     progressText.textContent = "Otimizando capa…";
@@ -886,7 +950,8 @@ uploadForm.addEventListener("submit", async (event) => {
     progressText.textContent = "Comprimindo áudio…";
     const compressedAudio = await gzipBlob(musicFile);
 
-    await setDoc(trackRef, {
+    const baseTrack = {
+      id: trackRef.id,
       title,
       artist,
       album,
@@ -894,7 +959,13 @@ uploadForm.addEventListener("submit", async (event) => {
       duration: selectedDurationSeconds,
       durationFormatted: formatTime(selectedDurationSeconds),
       ownerId: user.uid,
-      ownerEmail: user.email || "",
+      ownerEmail: user.email || ""
+    };
+
+    await setDoc(trackRef, {
+      ...baseTrack,
+      recordType: "track",
+      audioUrl: "firestore-chunks",
       originalName: musicFile.name,
 
       audioMime: musicFile.type || "audio/mpeg",
@@ -927,17 +998,19 @@ uploadForm.addEventListener("submit", async (event) => {
     };
 
     const coverChunks = await writeChunks(
-      trackRef,
-      "coverChunks",
+      baseTrack,
+      "cover",
       compressedCover,
-      updateProgress
+      updateProgress,
+      writtenRefs
     );
 
     const audioChunks = await writeChunks(
-      trackRef,
-      "audioChunks",
+      baseTrack,
+      "audio",
       compressedAudio,
-      updateProgress
+      updateProgress,
+      writtenRefs
     );
 
     await updateDoc(trackRef, {
@@ -975,19 +1048,20 @@ uploadForm.addEventListener("submit", async (event) => {
 
     if (parentCreated) {
       progressText.textContent = "Desfazendo envio incompleto…";
-      await cleanupPartialTrack(trackRef);
+      await cleanupPartialTrack(trackRef, writtenRefs);
     }
 
     progressBar.classList.remove("pending");
     progress.style.width = "0%";
-    progressText.textContent = "Não foi possível concluir.";
 
-    if (error?.code === "permission-denied") {
-      showToast("O banco recusou o envio. Atualize as regras do Firestore.", "error");
-    } else if (error?.code === "resource-exhausted") {
-      showToast("O limite do banco foi atingido.", "error");
+    const errorCode = error?.code || "erro-desconhecido";
+    progressText.textContent = `Falha ao salvar (${errorCode}).`;
+    if (errorCode === "permission-denied") {
+      showToast("O banco recusou a gravação (permission-denied). Confira as regras da coleção tracks.", "error");
+    } else if (errorCode === "resource-exhausted") {
+      showToast("O limite do banco foi atingido (resource-exhausted).", "error");
     } else {
-      showToast("Não foi possível adicionar a música.", "error");
+      showToast(`Não foi possível adicionar a música (${errorCode}).`, "error");
     }
   } finally {
     submit.disabled = false;
@@ -1004,8 +1078,7 @@ async function deleteTrack(track) {
   const trackRef = doc(db, "tracks", track.id);
 
   try {
-    await deleteChunks(trackRef, "audioChunks");
-    await deleteChunks(trackRef, "coverChunks");
+    await deleteRefs(refsForTrackChunks(track));
     await deleteDoc(trackRef);
 
     releaseCachedTrack(track.id);
@@ -1046,7 +1119,7 @@ async function playTrack(track) {
     let sourceUrl;
 
     // Compatibilidade com músicas antigas que ainda tenham URL externa.
-    if (track.audioUrl) {
+    if (track.audioUrl && track.audioUrl !== "firestore-chunks") {
       sourceUrl = track.audioUrl;
     } else {
       showToast("Preparando música…");
