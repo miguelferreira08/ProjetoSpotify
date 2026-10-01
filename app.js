@@ -648,8 +648,7 @@ function trackRows(list, context = "home") {
         .map((track, index) => {
         const isCurrent = currentTrack?.id === track.id;
         const isSaved = savedTrackIds.has(track.id);
-        const playIcon = isCurrent && !audio.paused
-            ? "Ⅱ" : "▶";
+        const playIcon = playStateMarkup(isCurrent && !audio.paused);
         return ` <article
           class="track-row ${isCurrent ? "active" : ""}" data-id="${track.id}" data-context="${context}"
         >
@@ -1510,12 +1509,21 @@ function prevTrack() {
 }
 
 function logoPlaceholderMarkup() {
-    return '<img alt="" src="./favicon.svg">';
+    return '<img alt="" src="./favicon.svg?v=16">';
 }
 
 function setLogoPlaceholder(element) {
     element.style.backgroundImage = "";
     element.innerHTML = logoPlaceholderMarkup();
+}
+
+function playStateMarkup(isPlaying) {
+    return `<span class="${isPlaying ? "pause-symbol" : "play-symbol"}" aria-hidden="true"></span>`;
+}
+
+function setPlayState(button, isPlaying) {
+    button.innerHTML = playStateMarkup(isPlaying);
+    button.setAttribute("aria-label", isPlaying ? "Pausar" : "Reproduzir");
 }
 
 function setFullscreenCover(track) {
@@ -1553,7 +1561,7 @@ function updateFullscreenUI() {
         fullscreenMeta.textContent = "—";
         fullscreenLikeBtn.textContent = "♡";
         fullscreenLikeBtn.classList.remove("liked");
-        fullscreenPlayBtn.textContent = "▶";
+        setPlayState(fullscreenPlayBtn, false);
         setFullscreenCover(null);
         return;
     }
@@ -1566,7 +1574,7 @@ function updateFullscreenUI() {
     const isSaved = savedTrackIds.has(currentTrack.id);
     fullscreenLikeBtn.textContent = isSaved ? "♥" : "♡";
     fullscreenLikeBtn.classList.toggle("liked", isSaved);
-    fullscreenPlayBtn.textContent = audio.paused ? "▶" : "Ⅱ";
+    setPlayState(fullscreenPlayBtn, !audio.paused);
     setFullscreenCover(currentTrack);
 }
 
@@ -1608,7 +1616,7 @@ function updatePlayerUI() {
         setLogoPlaceholder(playerCover);
         playerLike.textContent = "♡";
         playerLike.classList.remove("liked");
-        playBtn.textContent = "▶";
+        setPlayState(playBtn, false);
         updateFullscreenUI();
         return;
     }
@@ -1617,7 +1625,7 @@ function updatePlayerUI() {
     const isSaved = savedTrackIds.has(currentTrack.id);
     playerLike.textContent = isSaved ? "♥" : "♡";
     playerLike.classList.toggle("liked", isSaved);
-    playBtn.textContent = audio.paused ? "▶" : "Ⅱ";
+    setPlayState(playBtn, !audio.paused);
     updateFullscreenUI();
     const cachedCover = coverUrlCache.get(currentTrack.id);
     if (cachedCover) {
