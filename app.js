@@ -2220,9 +2220,10 @@ async function selectCurrentTrack(track) {
   );
 
   if (changingTrack && isNowPlayingScreenOpen()) {
+    nowPlayingScreen.classList.add("is-switching");
     fullscreenTrackStage.classList.remove("track-enter");
     fullscreenTrackStage.classList.add("track-exit");
-    await wait(180);
+    await wait(220);
   }
 
   currentTrack = track;
@@ -2236,9 +2237,13 @@ async function selectCurrentTrack(track) {
     void fullscreenTrackStage.offsetWidth;
     fullscreenTrackStage.classList.add("track-enter");
 
+    requestAnimationFrame(() => {
+      nowPlayingScreen.classList.remove("is-switching");
+    });
+
     setTimeout(() => {
       fullscreenTrackStage.classList.remove("track-enter");
-    }, 360);
+    }, 440);
   }
 }
 
@@ -2628,6 +2633,7 @@ document.addEventListener("keydown", (event) => {
 });
 
 audio.addEventListener("play", () => {
+  document.body.classList.add("is-playing");
   updatePlayerUI();
   renderHome();
   renderLibraryDetail();
@@ -2638,6 +2644,7 @@ audio.addEventListener("play", () => {
 });
 
 audio.addEventListener("pause", () => {
+  document.body.classList.remove("is-playing");
   updatePlayerUI();
   renderHome();
   renderLibraryDetail();
@@ -2688,6 +2695,8 @@ audio.addEventListener("timeupdate", () => {
 });
 
 audio.addEventListener("ended", () => {
+  document.body.classList.remove("is-playing");
+
   if (repeat) {
     audio.currentTime = 0;
     audio.play().catch(console.error);
