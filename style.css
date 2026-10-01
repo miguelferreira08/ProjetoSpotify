@@ -3074,3 +3074,167 @@ body.is-playing .now-playing-screen.is-open .fullscreen-cover {
     align-items: center;
     justify-items: center;
 }
+
+
+/* =========================================================
+   SCROLLBAR PRÓPRIO DO REDBEAT
+   ========================================================= */
+
+html,
+body {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+
+html::-webkit-scrollbar,
+body::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+    display: none;
+}
+
+/* Mantém barras internas de listas e modais utilizáveis. */
+.modal-card,
+.action-list,
+.track-list,
+.now-playing-screen,
+.library-view,
+.auth-panel {
+    scrollbar-width: thin;
+}
+
+.site-scrollbar {
+    position: fixed;
+    top: 10px;
+    right: 6px;
+    bottom: 10px;
+    z-index: 9999;
+    width: 14px;
+    opacity: .5;
+    pointer-events: none;
+    transition: opacity .24s ease, transform .24s ease;
+}
+
+.site-scrollbar.is-needed {
+    pointer-events: auto;
+}
+
+.site-scrollbar.is-active,
+.site-scrollbar:hover,
+.site-scrollbar.is-dragging {
+    opacity: 1;
+    transform: translateX(-1px);
+}
+
+.site-scrollbar-track {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    border: 1px solid rgba(255,255,255,.045);
+    border-radius: 999px;
+    background: linear-gradient(
+        180deg,
+        rgba(255,255,255,.025),
+        rgba(255,255,255,.012)
+    );
+    box-shadow:
+        inset 0 0 0 1px rgba(0,0,0,.22),
+        0 0 24px rgba(0,0,0,.15);
+    backdrop-filter: blur(10px);
+    cursor: pointer;
+}
+
+.site-scrollbar-thumb {
+    position: absolute;
+    top: 0;
+    left: 2px;
+    width: 8px;
+    min-height: 52px;
+    border-radius: 999px;
+    background: linear-gradient(
+        180deg,
+        #ff4b59 0%,
+        #e50914 48%,
+        #a6000a 100%
+    );
+    box-shadow:
+        0 0 0 1px rgba(255,255,255,.08),
+        0 0 12px rgba(229,9,20,.18),
+        inset 0 1px 0 rgba(255,255,255,.28);
+    transform: translate3d(0,0,0);
+    will-change: transform, height;
+    cursor: grab;
+    transition:
+        width .18s ease,
+        left .18s ease,
+        box-shadow .18s ease,
+        filter .18s ease;
+    overflow: hidden;
+}
+
+.site-scrollbar-thumb:hover,
+.site-scrollbar.is-dragging .site-scrollbar-thumb {
+    left: 1px;
+    width: 10px;
+    filter: saturate(1.16) brightness(1.08);
+    box-shadow:
+        0 0 0 1px rgba(255,255,255,.12),
+        0 0 20px rgba(229,9,20,.42),
+        inset 0 1px 0 rgba(255,255,255,.34);
+}
+
+.site-scrollbar.is-dragging .site-scrollbar-thumb {
+    cursor: grabbing;
+}
+
+.site-scrollbar-glow {
+    position: absolute;
+    inset: 5px 1px;
+    border-radius: inherit;
+    background: linear-gradient(
+        180deg,
+        rgba(255,255,255,.28),
+        transparent 26%,
+        transparent 72%,
+        rgba(255,255,255,.08)
+    );
+    pointer-events: none;
+}
+
+.site-scrollbar:not(.is-needed) {
+    opacity: 0;
+    pointer-events: none;
+}
+
+@media (max-width: 720px) {
+    .site-scrollbar {
+        right: 3px;
+        width: 9px;
+        opacity: .34;
+    }
+
+    .site-scrollbar-thumb {
+        left: 2px;
+        width: 5px;
+    }
+
+    .site-scrollbar-thumb:hover,
+    .site-scrollbar.is-dragging .site-scrollbar-thumb {
+        left: 1px;
+        width: 7px;
+    }
+}
+
+@media (pointer: coarse) {
+    .site-scrollbar {
+        pointer-events: none;
+        opacity: .28;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .site-scrollbar,
+    .site-scrollbar-thumb {
+        transition: none !important;
+    }
+}
