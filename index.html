@@ -9,195 +9,179 @@
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
-  <header class="topbar">
-    <a class="brand" href="#catalogSection" aria-label="RedBeat">
-      <img src="./favicon.svg" alt="" />
-      <strong>RedBeat</strong>
-    </a>
-
-    <nav class="topnav" aria-label="Menu principal">
-      <button class="nav-btn active" id="showLibrary">Biblioteca</button>
-      <button class="nav-btn" id="showLiked">Curtidas</button>
-    </nav>
-
-    <label class="search-box">
-      <span aria-hidden="true">⌕</span>
-      <input id="searchInput" type="search" placeholder="Buscar música, artista, álbum ou gênero" autocomplete="off" />
-    </label>
-
-    <div class="top-actions">
-      <button class="primary-btn compact" id="openUpload">＋ Adicionar</button>
-      <button class="ghost-btn" id="loginBtn">Entrar</button>
-      <button class="profile-btn hidden" id="profileBtn" aria-label="Abrir conta">
-        <span class="avatar" id="avatar">U</span>
-        <span id="profileLabel">Usuário</span>
-      </button>
+  <section class="auth-gate" id="authGate">
+    <div class="auth-panel">
+      <div class="auth-brand">
+        <img src="./favicon.svg" alt="" />
+        <strong>RedBeat</strong>
+      </div>
+      <span class="eyebrow">SUA CONTA</span>
+      <h1 id="gateTitle">Entrar no RedBeat</h1>
+      <p id="gateCopy">Entre com sua conta para acessar músicas, biblioteca e playlists.</p>
+      <form id="gateAuthForm" class="auth-form">
+        <label><span>E-mail</span><input id="gateEmail" type="email" autocomplete="email" required placeholder="voce@email.com" /></label>
+        <label><span>Senha</span><input id="gatePassword" type="password" autocomplete="current-password" minlength="6" required placeholder="••••••••" /></label>
+        <p class="error-message hidden" id="gateError"></p>
+        <button class="primary-btn full" id="gateSubmit" type="submit">Entrar</button>
+        <button class="text-btn" id="gateToggle" type="button">Criar uma conta</button>
+      </form>
     </div>
-  </header>
+  </section>
 
-  <main class="main">
-    <section class="content-section" id="catalogSection">
-      <div class="section-heading">
-        <div>
-          <span class="eyebrow">RED BEAT</span>
-          <h1 id="catalogTitle">Sua biblioteca</h1>
+  <div id="appRoot" class="hidden">
+    <header class="topbar">
+      <a class="brand" href="#" id="brandHome" aria-label="RedBeat">
+        <img src="./favicon.svg" alt="" />
+        <strong>RedBeat</strong>
+      </a>
+
+      <nav class="topnav" aria-label="Menu principal">
+        <button class="nav-btn active" id="showHome">Início</button>
+        <button class="nav-btn" id="showLibrary">Biblioteca</button>
+      </nav>
+
+      <label class="search-box" id="searchBox">
+        <span aria-hidden="true">⌕</span>
+        <input id="searchInput" type="search" placeholder="Buscar música, artista, álbum ou gênero" autocomplete="off" />
+      </label>
+
+      <div class="top-actions">
+        <button class="primary-btn compact" id="openUpload">＋ Adicionar</button>
+        <button class="profile-btn" id="profileBtn" aria-label="Abrir conta">
+          <span class="avatar" id="avatar">U</span>
+          <span id="profileLabel">Usuário</span>
+        </button>
+      </div>
+    </header>
+
+    <main class="main">
+      <section class="view" id="homeView">
+        <div class="section-heading">
+          <div>
+            <span class="eyebrow">CATÁLOGO</span>
+            <h1>Todas as músicas</h1>
+          </div>
+          <div class="library-actions">
+            <span class="track-count" id="trackCount">0 músicas</span>
+            <button class="icon-action" id="playAllBtn" title="Tocar catálogo" aria-label="Tocar catálogo">▶</button>
+          </div>
         </div>
-        <div class="library-actions">
-          <span class="track-count" id="trackCount">0 músicas</span>
-          <button class="icon-action" id="playAllBtn" title="Tocar catálogo" aria-label="Tocar catálogo">▶</button>
+        <div class="table-head">
+          <span>#</span><span>Título</span><span>Álbum</span><span>Gênero</span><span>Duração</span><span>♡</span><span>⋯</span>
         </div>
-      </div>
+        <div id="trackList" class="track-list"></div>
+      </section>
 
-      <div class="table-head">
-        <span>#</span>
-        <span>Título</span>
-        <span>Álbum</span>
-        <span>Gênero</span>
-        <span>Duração</span>
-        <span>♡</span>
-        <span>⋯</span>
-      </div>
+      <section class="view hidden" id="libraryView">
+        <div id="libraryOverview">
+          <div class="section-heading">
+            <div><span class="eyebrow">SUA CONTA</span><h1>Sua biblioteca</h1></div>
+            <button class="primary-btn" id="openCreatePlaylist">＋ Nova playlist</button>
+          </div>
 
-      <div id="trackList" class="track-list">
-        <div class="empty-state">
-          <div class="empty-icon">♫</div>
-          <h2>Seu catálogo está vazio</h2>
-          <p>Entre na conta e envie seu primeiro arquivo de áudio.</p>
-          <button class="primary-btn" data-action="open-upload">Adicionar música</button>
+          <div class="library-grid">
+            <button class="library-card saved-card" id="openSavedTracks">
+              <span class="library-cover">♥</span>
+              <strong>Músicas salvas</strong>
+              <small id="savedCount">0 músicas</small>
+            </button>
+            <div id="playlistGrid" class="playlist-grid"></div>
+          </div>
         </div>
-      </div>
-    </section>
-  </main>
 
-  <footer class="player">
-    <div class="now-playing">
-      <div class="player-cover" id="playerCover">R</div>
-      <div class="player-meta">
-        <strong id="playerTitle">Nenhuma música</strong>
-        <span id="playerArtist">Escolha uma faixa</span>
-      </div>
-      <button class="like-btn" id="playerLike" aria-label="Curtir música">♡</button>
-    </div>
+        <div id="libraryDetail" class="hidden">
+          <div class="detail-top">
+            <button class="back-btn" id="backLibrary">← Voltar</button>
+            <div><span class="eyebrow">BIBLIOTECA</span><h1 id="libraryDetailTitle">Playlist</h1></div>
+          </div>
+          <div class="table-head">
+            <span>#</span><span>Título</span><span>Álbum</span><span>Gênero</span><span>Duração</span><span>♡</span><span>⋯</span>
+          </div>
+          <div id="libraryTrackList" class="track-list"></div>
+        </div>
+      </section>
+    </main>
 
-    <div class="player-center">
-      <div class="player-controls">
-        <button class="control-btn" id="shuffleBtn" aria-label="Aleatório">⌘</button>
-        <button class="control-btn" id="prevBtn" aria-label="Anterior">◀</button>
-        <button class="play-btn" id="playBtn" aria-label="Reproduzir">▶</button>
-        <button class="control-btn" id="nextBtn" aria-label="Próxima">▶</button>
-        <button class="control-btn" id="repeatBtn" aria-label="Repetir">↻</button>
+    <footer class="player">
+      <div class="now-playing">
+        <div class="player-cover" id="playerCover">R</div>
+        <div class="player-meta"><strong id="playerTitle">Nenhuma música</strong><span id="playerArtist">Escolha uma faixa</span></div>
+        <button class="like-btn" id="playerLike" aria-label="Salvar música">♡</button>
       </div>
-      <div class="progress-row">
-        <span id="currentTime">0:00</span>
-        <input id="seekBar" type="range" min="0" max="100" value="0" step="0.1" />
-        <span id="duration">0:00</span>
+      <div class="player-center">
+        <div class="player-controls">
+          <button class="control-btn" id="shuffleBtn" aria-label="Aleatório">⌘</button>
+          <button class="control-btn" id="prevBtn" aria-label="Anterior">◀</button>
+          <button class="play-btn" id="playBtn" aria-label="Reproduzir">▶</button>
+          <button class="control-btn" id="nextBtn" aria-label="Próxima">▶</button>
+          <button class="control-btn" id="repeatBtn" aria-label="Repetir">↻</button>
+        </div>
+        <div class="progress-row"><span id="currentTime">0:00</span><input id="seekBar" type="range" min="0" max="100" value="0" step="0.1" /><span id="duration">0:00</span></div>
       </div>
-    </div>
-
-    <div class="volume">
-      <span aria-hidden="true">◖</span>
-      <input id="volumeBar" type="range" min="0" max="1" value="0.8" step="0.01" />
-    </div>
-
-    <audio id="audio"></audio>
-  </footer>
+      <div class="volume"><span aria-hidden="true">◖</span><input id="volumeBar" type="range" min="0" max="1" value="0.8" step="0.01" /></div>
+      <audio id="audio"></audio>
+    </footer>
+  </div>
 
   <dialog class="modal" id="uploadModal">
     <form class="modal-card" id="uploadForm">
       <button class="modal-close" type="button" data-close="uploadModal">×</button>
-      <span class="eyebrow">NOVA FAIXA</span>
-      <h2>Adicionar música</h2>
+      <span class="eyebrow">NOVA FAIXA</span><h2>Adicionar música</h2>
       <p class="modal-copy">Adicione apenas arquivos que você tenha direito de armazenar e reproduzir.</p>
-
       <label class="dropzone" id="dropzone">
         <input id="audioFile" name="audio" type="file" accept="audio/*,.mp3,.m4a,.aac,.wav,.ogg" required />
-        <span class="drop-icon">⇧</span>
-        <strong id="fileLabel">Clique ou arraste um arquivo de áudio</strong>
-        <small>Áudio: até 25 MB</small>
+        <span class="drop-icon">⇧</span><strong id="fileLabel">Clique ou arraste um arquivo de áudio</strong><small>Áudio: até 25 MB</small>
       </label>
-
       <label class="cover-picker">
         <input id="coverFile" name="cover" type="file" accept="image/*" required />
         <span class="cover-preview" id="coverPreview">▧</span>
-        <span class="cover-picker-copy">
-          <strong id="coverFileLabel">Selecionar capa do álbum</strong>
-          <small>JPG, PNG ou WebP • será otimizada automaticamente</small>
-        </span>
+        <span class="cover-picker-copy"><strong id="coverFileLabel">Selecionar capa do álbum</strong><small>JPG, PNG ou WebP • otimizada automaticamente</small></span>
       </label>
-
       <div class="form-grid">
-        <label>
-          <span>Título</span>
-          <input id="trackTitle" required maxlength="80" placeholder="Nome da música" />
-        </label>
-        <label>
-          <span>Artista</span>
-          <input id="trackArtist" required maxlength="80" placeholder="Nome do artista" />
-        </label>
+        <label><span>Título</span><input id="trackTitle" required maxlength="80" placeholder="Nome da música" /></label>
+        <label><span>Artista</span><input id="trackArtist" required maxlength="80" placeholder="Nome do artista" /></label>
       </div>
-
       <div class="form-grid">
-        <label>
-          <span>Álbum / coleção</span>
-          <input id="trackAlbum" required maxlength="80" placeholder="Nome do álbum" />
-        </label>
-        <label>
-          <span>Gênero</span>
-          <input id="trackGenre" required maxlength="50" placeholder="Ex.: Rock, Pop, Rap" />
-        </label>
+        <label><span>Álbum / coleção</span><input id="trackAlbum" required maxlength="80" placeholder="Nome do álbum" /></label>
+        <label><span>Gênero</span><input id="trackGenre" required maxlength="50" placeholder="Ex.: Funk" /></label>
       </div>
-
-      <label>
-        <span>Duração</span>
-        <input id="trackDuration" value="Selecione um arquivo" readonly aria-readonly="true" />
-      </label>
-
-      <div class="upload-progress hidden" id="uploadProgressWrap">
-        <div class="upload-progress-bar"><span id="uploadProgress"></span></div>
-        <small id="uploadProgressText">Preparando música…</small>
-      </div>
-
+      <label><span>Duração</span><input id="trackDuration" value="Selecione um arquivo" readonly /></label>
+      <div class="upload-progress hidden" id="uploadProgressWrap"><div class="upload-progress-bar"><span id="uploadProgress"></span></div><small id="uploadProgressText">Preparando música…</small></div>
       <button class="primary-btn full" id="uploadSubmit" type="submit">Adicionar música</button>
     </form>
   </dialog>
 
-  <dialog class="modal" id="authModal">
-    <form class="modal-card auth-card" id="authForm">
-      <button class="modal-close" type="button" data-close="authModal">×</button>
-      <span class="eyebrow">CONTA REDBEAT</span>
-      <h2 id="authTitle">Entrar</h2>
-      <p class="modal-copy" id="authCopy">Entre para adicionar e gerenciar suas músicas.</p>
-
-      <div class="auth-warning hidden" id="authEnvironmentWarning"></div>
-
-      <label>
-        <span>E-mail</span>
-        <input id="emailInput" type="email" autocomplete="email" required placeholder="voce@email.com" />
-      </label>
-      <label>
-        <span>Senha</span>
-        <input id="passwordInput" type="password" autocomplete="current-password" minlength="6" required placeholder="••••••••" />
-      </label>
-
-      <p class="error-message hidden" id="authError"></p>
-
-      <button class="primary-btn full" id="authSubmit" type="submit">Entrar</button>
-      <button class="text-btn" id="toggleAuthMode" type="button">Criar uma conta</button>
+  <dialog class="modal" id="createPlaylistModal">
+    <form class="modal-card small-card" id="createPlaylistForm">
+      <button class="modal-close" type="button" data-close="createPlaylistModal">×</button>
+      <span class="eyebrow">BIBLIOTECA</span><h2>Nova playlist</h2>
+      <label><span>Nome</span><input id="playlistName" required maxlength="60" placeholder="Minha playlist" /></label>
+      <button class="primary-btn full" type="submit">Criar playlist</button>
     </form>
   </dialog>
 
+  <dialog class="modal" id="trackActionsModal">
+    <div class="modal-card small-card">
+      <button class="modal-close" type="button" data-close="trackActionsModal">×</button>
+      <span class="eyebrow">MÚSICA</span><h2 id="actionTrackTitle">Opções</h2>
+      <button class="secondary-btn full" id="actionSaveTrack">Salvar na biblioteca</button>
+      <div class="modal-divider"></div>
+      <strong class="modal-label">Adicionar à playlist</strong>
+      <div id="actionPlaylistList" class="action-list"></div>
+      <button class="danger-btn hidden" id="actionDeleteTrack">Excluir música do catálogo</button>
+    </div>
+  </dialog>
+
   <dialog class="modal" id="accountModal">
-    <div class="modal-card account-card">
+    <div class="modal-card small-card">
       <button class="modal-close" type="button" data-close="accountModal">×</button>
-      <span class="eyebrow">CONTA</span>
-      <h2 id="accountEmail">Usuário</h2>
-      <p class="modal-copy">Músicas enviadas ficam vinculadas ao seu usuário.</p>
+      <span class="eyebrow">CONTA</span><h2 id="accountEmail">Usuário</h2>
+      <p class="modal-copy">Sua biblioteca e playlists ficam vinculadas à sua conta.</p>
       <button class="secondary-btn full" id="logoutBtn">Sair</button>
     </div>
   </dialog>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
-
   <script type="module" src="./app.js"></script>
 </body>
 </html>
