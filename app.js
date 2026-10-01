@@ -943,7 +943,7 @@ function setView(view) {
         renderLibrary();
     }
     updateAppBackButton();
-    window.scrollTo({
+    pageScrollContainer?.scrollTo({
         top: 0, behavior: "smooth",
     });
 }
@@ -1813,6 +1813,7 @@ updateAppBackButton();
 
 // ==================== SCROLLBAR PRÓPRIO DO SITE ====================
 
+const pageScrollContainer = $("#pageScrollContainer");
 const siteScrollbar = $("#siteScrollbar");
 const siteScrollbarTrack = $("#siteScrollbarTrack");
 const siteScrollThumb = $("#siteScrollThumb");
@@ -1824,29 +1825,39 @@ let siteScrollDragStartY = 0;
 let siteScrollDragStartTop = 0;
 
 function getPageScrollMetrics() {
-    const root = document.documentElement;
-    const body = document.body;
-    const scrollHeight = Math.max(
-        root.scrollHeight,
-        body.scrollHeight,
-        root.offsetHeight,
-        body.offsetHeight,
-    );
-    const viewportHeight = window.innerHeight;
+    if (!pageScrollContainer) {
+        return {
+            scrollHeight: 0,
+            viewportHeight: 0,
+            maxScroll: 0,
+            scrollTop: 0,
+        };
+    }
+
+    const scrollHeight = pageScrollContainer.scrollHeight;
+    const viewportHeight = pageScrollContainer.clientHeight;
     const maxScroll = Math.max(0, scrollHeight - viewportHeight);
 
     return {
         scrollHeight,
         viewportHeight,
         maxScroll,
-        scrollTop: Math.min(maxScroll, Math.max(0, window.scrollY)),
+        scrollTop: Math.min(
+            maxScroll,
+            Math.max(0, pageScrollContainer.scrollTop),
+        ),
     };
 }
 
 function updateSiteScrollbar() {
     siteScrollRaf = 0;
 
-    if (!siteScrollbar || !siteScrollbarTrack || !siteScrollThumb) {
+    if (
+        !pageScrollContainer ||
+        !siteScrollbar ||
+        !siteScrollbarTrack ||
+        !siteScrollThumb
+    ) {
         return;
     }
 
@@ -1865,7 +1876,10 @@ function updateSiteScrollbar() {
     const proportionalHeight = trackHeight * (
         metrics.viewportHeight / metrics.scrollHeight
     );
-    const thumbHeight = Math.max(52, Math.min(trackHeight, proportionalHeight));
+    const thumbHeight = Math.max(
+        52,
+        Math.min(trackHeight, proportionalHeight),
+    );
     const maxThumbTop = Math.max(0, trackHeight - thumbHeight);
     const scrollRatio = metrics.maxScroll
         ? metrics.scrollTop / metrics.maxScroll
@@ -1900,6 +1914,10 @@ function wakeSiteScrollbar() {
 }
 
 function scrollFromThumbTop(thumbTop) {
+    if (!pageScrollContainer) {
+        return;
+    }
+
     const metrics = getPageScrollMetrics();
     const trackHeight = siteScrollbarTrack.clientHeight;
     const thumbHeight = siteScrollThumb.offsetHeight;
@@ -1907,26 +1925,30 @@ function scrollFromThumbTop(thumbTop) {
     const clampedTop = Math.min(maxThumbTop, Math.max(0, thumbTop));
     const ratio = clampedTop / maxThumbTop;
 
-    window.scrollTo({
+    pageScrollContainer.scrollTo({
         top: ratio * metrics.maxScroll,
         behavior: "auto",
     });
 }
 
-window.addEventListener("scroll", () => {
+pageScrollContainer?.addEventListener("scroll", () => {
     requestSiteScrollbarUpdate();
     wakeSiteScrollbar();
 }, { passive: true });
 
 window.addEventListener("resize", requestSiteScrollbarUpdate, { passive: true });
 window.addEventListener("load", requestSiteScrollbarUpdate, { once: true });
-
 document.addEventListener("DOMContentLoaded", requestSiteScrollbarUpdate, { once: true });
 
-if ("ResizeObserver" in window) {
+if ("ResizeObserver" in window && pageScrollContainer) {
     const siteResizeObserver = new ResizeObserver(requestSiteScrollbarUpdate);
-    siteResizeObserver.observe(document.documentElement);
-    siteResizeObserver.observe(document.body);
+    siteResizeObserver.observe(pageScrollContainer);
+
+    [$("#authGate"), $("#appRoot")].forEach((element) => {
+        if (element) {
+            siteResizeObserver.observe(element);
+        }
+    });
 }
 
 siteScrollbarTrack?.addEventListener("pointerdown", (event) => {
