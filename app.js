@@ -1509,29 +1509,37 @@ function prevTrack() {
     playTrack(list[index]);
 }
 
+function logoPlaceholderMarkup() {
+    return '<img alt="" src="./favicon.svg">';
+}
+
+function setLogoPlaceholder(element) {
+    element.style.backgroundImage = "";
+    element.innerHTML = logoPlaceholderMarkup();
+}
+
 function setFullscreenCover(track) {
     if (!track) {
-        fullscreenCover.style.backgroundImage = "";
         fullscreenBackdrop.style.backgroundImage = "";
-        fullscreenCover.textContent = "R";
+        setLogoPlaceholder(fullscreenCover);
         return;
     }
     const cached = coverUrlCache.get(track.id);
     if (cached) {
-        fullscreenCover.textContent = "";
+        fullscreenCover.innerHTML = "";
         fullscreenCover.style.backgroundImage = `url("${cached}")`;
         fullscreenBackdrop.style.backgroundImage = `url("${cached}")`;
         return;
     }
+    fullscreenCover.innerHTML = initials(track.title);
     fullscreenCover.style.backgroundImage = "";
     fullscreenBackdrop.style.backgroundImage = "";
-    fullscreenCover.textContent = initials(track.title);
     buildAssetUrl(track, "cover")
         .then((url) => {
         if (currentTrack?.id !== track.id) {
             return;
         }
-        fullscreenCover.textContent = "";
+        fullscreenCover.innerHTML = "";
         fullscreenCover.style.backgroundImage = `url("${url}")`;
         fullscreenBackdrop.style.backgroundImage = `url("${url}")`;
     })
@@ -1597,8 +1605,7 @@ function updatePlayerUI() {
     if (!currentTrack) {
         playerTitle.textContent = "Nenhuma música";
         playerArtist.textContent = "Escolha uma faixa";
-        playerCover.style.backgroundImage = "";
-        playerCover.textContent = "R";
+        setLogoPlaceholder(playerCover);
         playerLike.textContent = "♡";
         playerLike.classList.remove("liked");
         playBtn.textContent = "▶";
@@ -1614,17 +1621,17 @@ function updatePlayerUI() {
     updateFullscreenUI();
     const cachedCover = coverUrlCache.get(currentTrack.id);
     if (cachedCover) {
-        playerCover.textContent = "";
+        playerCover.innerHTML = "";
         playerCover.style.backgroundImage = `url("${cachedCover}")`;
         return;
     }
+    playerCover.innerHTML = initials(currentTrack.title);
     playerCover.style.backgroundImage = "";
-    playerCover.textContent = initials(currentTrack.title);
     const trackId = currentTrack.id;
     buildAssetUrl(currentTrack, "cover")
         .then((url) => {
         if (currentTrack?.id === trackId) {
-            playerCover.textContent = "";
+            playerCover.innerHTML = "";
             playerCover.style.backgroundImage = `url("${url}")`;
             updateFullscreenUI();
         }

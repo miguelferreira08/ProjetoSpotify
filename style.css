@@ -425,6 +425,8 @@ button {
 }
 
 .icon-action {
+    display: grid;
+    place-items: center;
     width: 42px;
     height: 42px;
     border: 0;
@@ -721,6 +723,8 @@ button {
     color: #ff5965;
     font-weight: 950;
     font-size: 21px;
+    overflow: hidden;
+    text-align: center;
 }
 
 .player-meta {
@@ -773,6 +777,11 @@ button {
     background: transparent;
     color: #858585;
     cursor: pointer;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    line-height: 1;
+    text-align: center;
 }
 
 .control-btn:hover,.control-btn.active {
@@ -787,7 +796,11 @@ button {
     background: white;
     color: #080808;
     cursor: pointer;
-    padding-left: 5px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    line-height: 1;
+    text-align: center;
 }
 
 .progress-row {
@@ -1475,17 +1488,22 @@ input[type=range]:hover::-webkit-slider-thumb {
     animation: homeSpin 16s linear infinite;
 }
 
-.pulse-disc span {
-    width: 34%;
+.pulse-logo {
+    width: 35%;
     aspect-ratio: 1;
     display: grid;
     place-items: center;
     border-radius: 50%;
-    background: var(--red);
-    color: white;
-    font-size: clamp(26px,5vw,48px);
-    font-weight: 950;
-    box-shadow: 0 0 0 9px #111;
+    background: #0c0c0e;
+    box-shadow: 0 0 0 9px #111, 0 0 22px rgba(229,9,20,.18);
+    overflow: hidden;
+}
+
+.pulse-logo img {
+    width: 82%;
+    height: 82%;
+    object-fit: contain;
+    display: block;
 }
 
 .pulse-bars {
@@ -1826,6 +1844,8 @@ body.now-playing-open {
     font-size: clamp(60px,10vw,110px);
     font-weight: 950;
     box-shadow: 0 35px 100px rgba(0,0,0,.55);
+    overflow: hidden;
+    text-align: center;
 }
 
 .fullscreen-info {
@@ -1869,6 +1889,11 @@ body.now-playing-open {
     background: rgba(255,255,255,.055);
     color: #d0d0d0;
     cursor: pointer;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    line-height: 1;
+    text-align: center;
 }
 
 .fullscreen-icon-btn:hover,.fullscreen-save-btn:hover,.fullscreen-save-btn.liked {
@@ -1891,6 +1916,11 @@ body.now-playing-open {
     cursor: pointer;
     font-size: 20px;
     box-shadow: 0 15px 38px rgba(229,9,20,.28);
+    display: grid;
+    place-items: center;
+    padding: 0;
+    line-height: 1;
+    text-align: center;
 }
 
 .fullscreen-play-btn:hover {
@@ -2884,4 +2914,13 @@ body.is-playing .now-playing-screen.is-open .fullscreen-cover {
         animation-iteration-count: 1 !important;
         transition-duration: .001ms !important;
     }
+}
+
+
+.player-cover img,
+.fullscreen-cover img {
+    width: 72%;
+    height: 72%;
+    object-fit: contain;
+    display: block;
 }
