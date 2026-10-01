@@ -94,6 +94,26 @@ const volumeBar = $("#volumeBar");
 const currentTime = $("#currentTime");
 const duration = $("#duration");
 const toast = $("#toast");
+const appBackButton = $("#appBackButton");
+
+const homeHero = $("#homeHero");
+const recentSection = $("#recentSection");
+const recentGrid = $("#recentGrid");
+const catalogBlock = $("#catalogBlock");
+const clearSearch = $("#clearSearch");
+const nowPlayingTrigger = $("#nowPlayingTrigger");
+const nowPlayingScreen = $("#nowPlayingScreen");
+const fullscreenBackdrop = $("#fullscreenBackdrop");
+const fullscreenTrackStage = $("#fullscreenTrackStage");
+const fullscreenCover = $("#fullscreenCover");
+const fullscreenTitle = $("#fullscreenTitle");
+const fullscreenArtist = $("#fullscreenArtist");
+const fullscreenMeta = $("#fullscreenMeta");
+const fullscreenLikeBtn = $("#fullscreenLikeBtn");
+const fullscreenPlayBtn = $("#fullscreenPlayBtn");
+const fullscreenSeekBar = $("#fullscreenSeekBar");
+const fullscreenCurrentTime = $("#fullscreenCurrentTime");
+const fullscreenDuration = $("#fullscreenDuration");
 
 const dropzone = $("#dropzone");
 const fileLabel = $("#fileLabel");
@@ -125,6 +145,8 @@ let shuffle = false;
 let selectedDurationSeconds = 0;
 let localCoverPreviewUrl = null;
 let toastTimer = null;
+let playbackRequestId = 0;
+let fullscreenCloseTimer = null;
 
 let unsubscribeTracks = null;
 let unsubscribeSaved = null;
@@ -144,6 +166,20 @@ audio.volume = Number(volumeBar.value);
 
 function safeText(value = "") {
   return String(value ?? "");
+}
+
+function normalizeSearchValue(value = "") {
+  return safeText(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
+function wait(milliseconds) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
 }
 
 function escapeHtml(value) {
@@ -936,24 +972,22 @@ async function hydrateListCovers(list, container) {
 }
 
 function getHomeTracks() {
-  const term = searchInput.value
-    .trim()
-    .toLowerCase();
+  const term = normalizeSearchValue(searchInput.value);
+
+  if (!term) {
+    return tracks;
+  }
 
   return tracks.filter((track) => {
-    if (!term) {
-      return true;
-    }
-
-    return [
+    const searchableFields = [
       track.title,
       track.artist,
       track.album,
       track.genre,
-    ].some((value) =>
-      safeText(value)
-        .toLowerCase()
-        .includes(term),
+    ];
+
+    return searchableFields.some((value) =>
+      normalizeSearchValue(value).includes(term),
     );
   });
 }
@@ -1027,8 +1061,69 @@ function trackRows(list, context = "home") {
     .join("");
 }
 
+function renderRecentTracks() {
+  const recentTracks = tracks.slice(0, 5);
+
+  if (!recentTracks.length) {
+    recentGrid.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-icon">♫</div>
+        <h2>Seu catálogo está vazio</h2>
+        <p>Adicione a primeira música para começar.</p>
+      </div>
+    `;
+    return;
+  }
+
+  recentGrid.innerHTML = recentTracks
+    .map((track) => `
+      <button class="recent-card" type="button" data-track-id="${track.id}">
+        <span class="recent-cover" data-cover-id="${track.id}">${initials(track.title)}</span>
+        <strong>${escapeHtml(track.title)}</strong>
+        <span>${escapeHtml(track.artist)}</span>
+      </button>
+    `)
+    .join("");
+
+  hydrateListCovers(recentTracks, recentGrid);
+}
+
+function updateHomeDashboard() {
+  const user = auth.currentUser;
+  const accountName = user?.email?.split("@")[0] || "ouvinte";
+  const displayName = accountName
+    .replace(/[._-]+/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+
+  $("#homeGreeting").textContent = `Olá, ${displayName}.`;
+  $("#homeTrackTotal").textContent = String(tracks.length);
+  $("#homeSavedTotal").textContent = String(savedTrackIds.size);
+  $("#homePlaylistTotal").textContent = String(playlists.length);
+}
+
 function renderHome() {
   visibleTracks = getHomeTracks();
+
+  const term = searchInput.value.trim();
+  const isSearching = Boolean(term);
+
+  homeHero.classList.toggle("searching", isSearching);
+  recentSection.classList.toggle("searching", isSearching);
+  clearSearch.classList.toggle("hidden", !isSearching);
+
+  $("#catalogEyebrow").textContent = isSearching
+    ? "PESQUISA"
+    : "CATÁLOGO";
+
+  $("#catalogTitle").textContent = isSearching
+    ? `Resultados para “${term}”`
+    : "Todas as músicas";
+
+  const searchStatus = $("#searchStatus");
+  searchStatus.classList.toggle("hidden", !isSearching);
+  searchStatus.textContent = isSearching
+    ? `${visibleTracks.length} ${visibleTracks.length === 1 ? "resultado encontrado" : "resultados encontrados"} no catálogo salvo.`
+    : "";
 
   $("#trackCount").textContent = `${visibleTracks.length} ${
     visibleTracks.length === 1 ? "música" : "músicas"
@@ -1044,6 +1139,11 @@ function renderHome() {
     trackList,
   );
 
+  if (!isSearching) {
+    renderRecentTracks();
+  }
+
+  updateHomeDashboard();
   syncCurrentIndex();
 }
 
@@ -1051,6 +1151,8 @@ function renderLibrary() {
   $("#savedCount").textContent = `${savedTrackIds.size} ${
     savedTrackIds.size === 1 ? "música" : "músicas"
   }`;
+
+  updateHomeDashboard();
 
   $("#playlistGrid").innerHTML = playlists
     .map((playlist) => `
@@ -1321,6 +1423,80 @@ async function loadPlaylist(playlist) {
 // 12. NAVEGAÇÃO ENTRE TELAS
 // ============================================================
 
+function canGoBackInsideApp() {
+  if (activeView === "library") {
+    return true;
+  }
+
+  if (activeView === "home" && searchInput.value.trim()) {
+    return true;
+  }
+
+  return false;
+}
+
+function updateAppBackButton() {
+  const canGoBack = canGoBackInsideApp();
+
+  appBackButton.disabled = !canGoBack;
+  appBackButton.setAttribute(
+    "aria-disabled",
+    String(!canGoBack),
+  );
+
+  if (activeView === "library" && libraryMode !== "overview") {
+    appBackButton.title = "Voltar para a biblioteca";
+    appBackButton.setAttribute(
+      "aria-label",
+      "Voltar para a biblioteca",
+    );
+    return;
+  }
+
+  if (activeView === "library") {
+    appBackButton.title = "Voltar para o início";
+    appBackButton.setAttribute(
+      "aria-label",
+      "Voltar para o início",
+    );
+    return;
+  }
+
+  if (searchInput.value.trim()) {
+    appBackButton.title = "Voltar para todas as músicas";
+    appBackButton.setAttribute(
+      "aria-label",
+      "Voltar para todas as músicas",
+    );
+    return;
+  }
+
+  appBackButton.title = "Voltar";
+  appBackButton.setAttribute(
+    "aria-label",
+    "Voltar dentro do aplicativo",
+  );
+}
+
+function goBackInsideApp() {
+  if (activeView === "library" && libraryMode !== "overview") {
+    showLibraryOverview();
+    return;
+  }
+
+  if (activeView === "library") {
+    setView("home");
+    return;
+  }
+
+  if (activeView === "home" && searchInput.value.trim()) {
+    searchInput.value = "";
+    renderHome();
+    searchInput.focus();
+    updateAppBackButton();
+  }
+}
+
 function setView(view) {
   activeView = view;
 
@@ -1344,16 +1520,13 @@ function setView(view) {
     view === "library",
   );
 
-  $("#searchBox").classList.toggle(
-    "hidden",
-    view !== "home",
-  );
-
   if (view === "home") {
     renderHome();
   } else {
     renderLibrary();
   }
+
+  updateAppBackButton();
 
   window.scrollTo({
     top: 0,
@@ -1367,6 +1540,7 @@ function showLibraryOverview() {
 
   libraryMode = "overview";
   renderLibrary();
+  updateAppBackButton();
 }
 
 function showLibraryDetail() {
@@ -1374,6 +1548,7 @@ function showLibraryDetail() {
   $("#libraryDetail").classList.remove("hidden");
 
   renderLibraryDetail();
+  updateAppBackButton();
 }
 
 $("#showHome").addEventListener("click", () => {
@@ -1392,7 +1567,12 @@ $("#showLibrary").addEventListener("click", () => {
 
 $("#backLibrary").addEventListener(
   "click",
-  showLibraryOverview,
+  goBackInsideApp,
+);
+
+appBackButton.addEventListener(
+  "click",
+  goBackInsideApp,
 );
 
 $("#openSavedTracks").addEventListener("click", () => {
@@ -1400,7 +1580,82 @@ $("#openSavedTracks").addEventListener("click", () => {
   showLibraryDetail();
 });
 
-searchInput.addEventListener("input", renderHome);
+searchInput.addEventListener("input", () => {
+  if (activeView !== "home") {
+    setView("home");
+  }
+
+  renderHome();
+  updateAppBackButton();
+});
+
+searchInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && searchInput.value.trim()) {
+    event.preventDefault();
+    catalogBlock.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  }
+});
+
+clearSearch.addEventListener("click", () => {
+  searchInput.value = "";
+  searchInput.focus();
+  renderHome();
+  updateAppBackButton();
+});
+
+recentGrid.addEventListener("click", (event) => {
+  const card = event.target.closest("[data-track-id]");
+
+  if (!card) {
+    return;
+  }
+
+  const track = tracks.find((item) => item.id === card.dataset.trackId);
+
+  if (track) {
+    playTrack(track);
+  }
+});
+
+$("#heroPlayBtn").addEventListener("click", () => {
+  const firstTrack = tracks[0];
+
+  if (firstTrack) {
+    playTrack(firstTrack);
+  } else {
+    showToast("Adicione uma música ao catálogo primeiro.");
+  }
+});
+
+$("#heroLibraryBtn").addEventListener("click", () => {
+  setView("library");
+  showLibraryOverview();
+});
+
+$("#heroUploadBtn").addEventListener("click", () => {
+  uploadModal.showModal();
+});
+
+$("#catalogStat").addEventListener("click", () => {
+  catalogBlock.scrollIntoView({
+    behavior: "smooth",
+    block: "start",
+  });
+});
+
+$("#savedStat").addEventListener("click", () => {
+  setView("library");
+  libraryMode = "saved";
+  showLibraryDetail();
+});
+
+$("#playlistStat").addEventListener("click", () => {
+  setView("library");
+  showLibraryOverview();
+});
 
 
 // ============================================================
@@ -1954,12 +2209,43 @@ async function deleteTrack(track) {
 // 16. PLAYER DE ÁUDIO
 // ============================================================
 
-async function playTrack(track) {
+function isNowPlayingScreenOpen() {
+  return nowPlayingScreen.classList.contains("is-open");
+}
+
+async function selectCurrentTrack(track) {
+  const changingTrack = Boolean(
+    currentTrack &&
+    currentTrack.id !== track.id,
+  );
+
+  if (changingTrack && isNowPlayingScreenOpen()) {
+    fullscreenTrackStage.classList.remove("track-enter");
+    fullscreenTrackStage.classList.add("track-exit");
+    await wait(180);
+  }
+
   currentTrack = track;
 
   updatePlayerUI();
   renderHome();
   renderLibraryDetail();
+
+  if (changingTrack && isNowPlayingScreenOpen()) {
+    fullscreenTrackStage.classList.remove("track-exit");
+    void fullscreenTrackStage.offsetWidth;
+    fullscreenTrackStage.classList.add("track-enter");
+
+    setTimeout(() => {
+      fullscreenTrackStage.classList.remove("track-enter");
+    }, 360);
+  }
+}
+
+async function playTrack(track) {
+  const requestId = ++playbackRequestId;
+
+  await selectCurrentTrack(track);
 
   try {
     showToast("Preparando música…");
@@ -1969,7 +2255,10 @@ async function playTrack(track) {
         ? track.audioUrl
         : await buildAssetUrl(track, "audio");
 
-    if (currentTrack?.id !== track.id) {
+    if (
+      requestId !== playbackRequestId ||
+      currentTrack?.id !== track.id
+    ) {
       return;
     }
 
@@ -2014,6 +2303,11 @@ async function updateMediaSession(track) {
 
 function currentPlaybackList() {
   if (activeView === "home") {
+    // Durante uma pesquisa, a próxima faixa continua no catálogo completo.
+    if (searchInput.value.trim()) {
+      return tracks;
+    }
+
     return visibleTracks.length
       ? visibleTracks
       : tracks;
@@ -2101,7 +2395,117 @@ function prevTrack() {
   playTrack(list[index]);
 }
 
+function setFullscreenCover(track) {
+  if (!track) {
+    fullscreenCover.style.backgroundImage = "";
+    fullscreenBackdrop.style.backgroundImage = "";
+    fullscreenCover.textContent = "R";
+    return;
+  }
+
+  const cached = coverUrlCache.get(track.id);
+
+  if (cached) {
+    fullscreenCover.textContent = "";
+    fullscreenCover.style.backgroundImage = `url("${cached}")`;
+    fullscreenBackdrop.style.backgroundImage = `url("${cached}")`;
+    return;
+  }
+
+  fullscreenCover.style.backgroundImage = "";
+  fullscreenBackdrop.style.backgroundImage = "";
+  fullscreenCover.textContent = initials(track.title);
+
+  buildAssetUrl(track, "cover")
+    .then((url) => {
+      if (currentTrack?.id !== track.id) {
+        return;
+      }
+
+      fullscreenCover.textContent = "";
+      fullscreenCover.style.backgroundImage = `url("${url}")`;
+      fullscreenBackdrop.style.backgroundImage = `url("${url}")`;
+    })
+    .catch(console.warn);
+}
+
+function updateFullscreenUI() {
+  if (!currentTrack) {
+    fullscreenTitle.textContent = "Nenhuma música";
+    fullscreenArtist.textContent = "Escolha uma faixa";
+    fullscreenMeta.textContent = "—";
+    fullscreenLikeBtn.textContent = "♡";
+    fullscreenLikeBtn.classList.remove("liked");
+    fullscreenPlayBtn.textContent = "▶";
+    setFullscreenCover(null);
+    return;
+  }
+
+  fullscreenTitle.textContent = currentTrack.title;
+  fullscreenArtist.textContent = currentTrack.artist;
+  fullscreenMeta.textContent = [
+    currentTrack.album || "Sem álbum",
+    currentTrack.genre || "Sem gênero",
+    currentTrack.durationFormatted || formatTime(Number(currentTrack.duration) || 0),
+  ].join(" • ");
+
+  const isSaved = savedTrackIds.has(currentTrack.id);
+
+  fullscreenLikeBtn.textContent = isSaved ? "♥" : "♡";
+  fullscreenLikeBtn.classList.toggle("liked", isSaved);
+  fullscreenPlayBtn.textContent = audio.paused ? "▶" : "Ⅱ";
+
+  setFullscreenCover(currentTrack);
+}
+
+function openNowPlayingScreen() {
+  if (!currentTrack || audio.paused) {
+    return;
+  }
+
+  clearTimeout(fullscreenCloseTimer);
+  updateFullscreenUI();
+
+  nowPlayingScreen.classList.remove("hidden");
+  nowPlayingScreen.setAttribute("aria-hidden", "false");
+  document.body.classList.add("now-playing-open");
+
+  requestAnimationFrame(() => {
+    nowPlayingScreen.classList.add("is-open");
+  });
+}
+
+function closeNowPlayingScreen() {
+  if (nowPlayingScreen.classList.contains("hidden")) {
+    return;
+  }
+
+  nowPlayingScreen.classList.remove("is-open");
+  nowPlayingScreen.setAttribute("aria-hidden", "true");
+  document.body.classList.remove("now-playing-open");
+
+  clearTimeout(fullscreenCloseTimer);
+  fullscreenCloseTimer = setTimeout(() => {
+    nowPlayingScreen.classList.add("hidden");
+  }, 350);
+}
+
 function updatePlayerUI() {
+  const canOpenFullscreen = Boolean(
+    currentTrack &&
+    !audio.paused,
+  );
+
+  nowPlayingTrigger.classList.toggle(
+    "is-clickable",
+    canOpenFullscreen,
+  );
+
+  nowPlayingTrigger.setAttribute(
+    "aria-disabled",
+    String(!canOpenFullscreen),
+  );
+
   if (!currentTrack) {
     playerTitle.textContent = "Nenhuma música";
     playerArtist.textContent = "Escolha uma faixa";
@@ -2110,6 +2514,7 @@ function updatePlayerUI() {
     playerLike.textContent = "♡";
     playerLike.classList.remove("liked");
     playBtn.textContent = "▶";
+    updateFullscreenUI();
     return;
   }
 
@@ -2122,6 +2527,8 @@ function updatePlayerUI() {
   playerLike.classList.toggle("liked", isSaved);
   playBtn.textContent = audio.paused ? "▶" : "Ⅱ";
 
+  updateFullscreenUI();
+
   const cachedCover = coverUrlCache.get(currentTrack.id);
 
   if (cachedCover) {
@@ -2133,11 +2540,14 @@ function updatePlayerUI() {
   playerCover.style.backgroundImage = "";
   playerCover.textContent = initials(currentTrack.title);
 
+  const trackId = currentTrack.id;
+
   buildAssetUrl(currentTrack, "cover")
     .then((url) => {
-      if (currentTrack) {
+      if (currentTrack?.id === trackId) {
         playerCover.textContent = "";
         playerCover.style.backgroundImage = `url("${url}")`;
+        updateFullscreenUI();
       }
     })
     .catch(console.warn);
@@ -2168,9 +2578,52 @@ $("#repeatBtn").addEventListener("click", (event) => {
   event.currentTarget.classList.toggle("active", repeat);
 });
 
-playerLike.addEventListener("click", () => {
+playerLike.addEventListener("click", (event) => {
+  event.stopPropagation();
+
   if (currentTrack) {
     toggleSaved(currentTrack);
+  }
+});
+
+nowPlayingTrigger.addEventListener("click", (event) => {
+  if (event.target.closest("button")) {
+    return;
+  }
+
+  openNowPlayingScreen();
+});
+
+nowPlayingTrigger.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" || event.key === " ") {
+    event.preventDefault();
+    openNowPlayingScreen();
+  }
+});
+
+$("#closeNowPlaying").addEventListener("click", closeNowPlayingScreen);
+$("#fullscreenPrevBtn").addEventListener("click", prevTrack);
+$("#fullscreenNextBtn").addEventListener("click", nextTrack);
+fullscreenPlayBtn.addEventListener("click", togglePlayback);
+
+fullscreenLikeBtn.addEventListener("click", () => {
+  if (currentTrack) {
+    toggleSaved(currentTrack);
+  }
+});
+
+fullscreenSeekBar.addEventListener("input", () => {
+  if (!audio.duration) {
+    return;
+  }
+
+  audio.currentTime =
+    (Number(fullscreenSeekBar.value) / 100) * audio.duration;
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && isNowPlayingScreenOpen()) {
+    closeNowPlayingScreen();
   }
 });
 
@@ -2195,7 +2648,9 @@ audio.addEventListener("pause", () => {
 });
 
 audio.addEventListener("loadedmetadata", () => {
-  duration.textContent = formatTime(audio.duration);
+  const formattedDuration = formatTime(audio.duration);
+  duration.textContent = formattedDuration;
+  fullscreenDuration.textContent = formattedDuration;
 });
 
 audio.addEventListener("timeupdate", () => {
@@ -2206,7 +2661,11 @@ audio.addEventListener("timeupdate", () => {
     : 0;
 
   seekBar.value = percentage;
+  fullscreenSeekBar.value = percentage;
+  fullscreenCurrentTime.textContent = formatTime(audio.currentTime);
+  fullscreenDuration.textContent = formatTime(audio.duration);
   updateRange(seekBar, percentage);
+  updateRange(fullscreenSeekBar, percentage);
 
   if (
     "mediaSession" in navigator &&
@@ -2231,10 +2690,11 @@ audio.addEventListener("timeupdate", () => {
 audio.addEventListener("ended", () => {
   if (repeat) {
     audio.currentTime = 0;
-    audio.play();
-  } else {
-    nextTrack();
+    audio.play().catch(console.error);
+    return;
   }
+
+  nextTrack();
 });
 
 seekBar.addEventListener("input", () => {
@@ -2252,6 +2712,11 @@ volumeBar.addEventListener("input", () => {
 updateRange(
   volumeBar,
   audio.volume * 100,
+);
+
+updateRange(
+  fullscreenSeekBar,
+  0,
 );
 
 if ("mediaSession" in navigator) {
@@ -2343,3 +2808,4 @@ setGateMode("login");
 renderHome();
 renderLibrary();
 updatePlayerUI();
+updateAppBackButton();

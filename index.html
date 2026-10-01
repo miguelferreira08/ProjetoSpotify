@@ -30,6 +30,17 @@
 
   <div id="appRoot" class="hidden">
     <header class="topbar">
+      <button
+        class="app-back-btn"
+        id="appBackButton"
+        type="button"
+        aria-label="Voltar dentro do aplicativo"
+        title="Voltar"
+        disabled
+      >
+        <span aria-hidden="true">←</span>
+      </button>
+
       <a class="brand" href="#" id="brandHome" aria-label="RedBeat">
         <img src="./favicon.svg" alt="" />
         <strong>RedBeat</strong>
@@ -40,10 +51,11 @@
         <button class="nav-btn" id="showLibrary">Biblioteca</button>
       </nav>
 
-      <label class="search-box" id="searchBox">
+      <div class="search-box" id="searchBox" role="search">
         <span aria-hidden="true">⌕</span>
         <input id="searchInput" type="search" placeholder="Buscar música, artista, álbum ou gênero" autocomplete="off" />
-      </label>
+        <button class="search-clear hidden" id="clearSearch" type="button" aria-label="Limpar pesquisa">×</button>
+      </div>
 
       <div class="top-actions">
         <button class="primary-btn compact" id="openUpload">＋ Adicionar</button>
@@ -56,20 +68,73 @@
 
     <main class="main">
       <section class="view" id="homeView">
-        <div class="section-heading">
-          <div>
-            <span class="eyebrow">CATÁLOGO</span>
-            <h1>Todas as músicas</h1>
+        <section class="home-hero" id="homeHero">
+          <div class="home-hero-glow" aria-hidden="true"></div>
+
+          <div class="home-hero-content">
+            <span class="eyebrow">RED BEAT // HOME</span>
+            <h1 id="homeGreeting">Seu som, do seu jeito.</h1>
+            <p id="homeHeroCopy">Acesse seu catálogo, continue ouvindo e organize tudo em um só lugar.</p>
+
+            <div class="home-hero-actions">
+              <button class="primary-btn home-action" id="heroPlayBtn" type="button">▶ Tocar tudo</button>
+              <button class="secondary-btn home-action" id="heroLibraryBtn" type="button">Biblioteca</button>
+              <button class="ghost-action" id="heroUploadBtn" type="button">＋ Música</button>
+            </div>
+
+            <div class="home-stats" aria-label="Resumo da conta">
+              <button class="home-stat" id="catalogStat" type="button">
+                <strong id="homeTrackTotal">0</strong>
+                <span>músicas</span>
+              </button>
+              <button class="home-stat" id="savedStat" type="button">
+                <strong id="homeSavedTotal">0</strong>
+                <span>salvas</span>
+              </button>
+              <button class="home-stat" id="playlistStat" type="button">
+                <strong id="homePlaylistTotal">0</strong>
+                <span>playlists</span>
+              </button>
+            </div>
           </div>
-          <div class="library-actions">
-            <span class="track-count" id="trackCount">0 músicas</span>
-            <button class="icon-action" id="playAllBtn" title="Tocar catálogo" aria-label="Tocar catálogo">▶</button>
+
+          <div class="pulse-orbit" aria-hidden="true">
+            <div class="pulse-disc">
+              <span>R</span>
+            </div>
+            <div class="pulse-bars">
+              <i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+            </div>
           </div>
-        </div>
-        <div class="table-head">
-          <span>#</span><span>Título</span><span>Álbum</span><span>Gênero</span><span>Duração</span><span>♡</span><span>⋯</span>
-        </div>
-        <div id="trackList" class="track-list"></div>
+        </section>
+
+        <section class="recent-section" id="recentSection">
+          <div class="mini-heading">
+            <div>
+              <span class="eyebrow">ACESSO RÁPIDO</span>
+              <h2>Adicionadas recentemente</h2>
+            </div>
+          </div>
+          <div class="recent-grid" id="recentGrid"></div>
+        </section>
+
+        <section class="catalog-block" id="catalogBlock">
+          <div class="section-heading">
+            <div>
+              <span class="eyebrow" id="catalogEyebrow">CATÁLOGO</span>
+              <h1 id="catalogTitle">Todas as músicas</h1>
+              <p class="search-status hidden" id="searchStatus"></p>
+            </div>
+            <div class="library-actions">
+              <span class="track-count" id="trackCount">0 músicas</span>
+              <button class="icon-action" id="playAllBtn" title="Tocar catálogo" aria-label="Tocar catálogo">▶</button>
+            </div>
+          </div>
+          <div class="table-head">
+            <span>#</span><span>Título</span><span>Álbum</span><span>Gênero</span><span>Duração</span><span>♡</span><span>⋯</span>
+          </div>
+          <div id="trackList" class="track-list"></div>
+        </section>
       </section>
 
       <section class="view hidden" id="libraryView">
@@ -103,7 +168,14 @@
     </main>
 
     <footer class="player">
-      <div class="now-playing">
+      <div
+        class="now-playing"
+        id="nowPlayingTrigger"
+        role="button"
+        tabindex="0"
+        aria-label="Abrir música em reprodução"
+        aria-disabled="true"
+      >
         <div class="player-cover" id="playerCover">R</div>
         <div class="player-meta"><strong id="playerTitle">Nenhuma música</strong><span id="playerArtist">Escolha uma faixa</span></div>
         <button class="like-btn" id="playerLike" aria-label="Salvar música">♡</button>
@@ -121,6 +193,49 @@
       <div class="volume"><span aria-hidden="true">◖</span><input id="volumeBar" type="range" min="0" max="1" value="0.8" step="0.01" /></div>
       <audio id="audio"></audio>
     </footer>
+
+    <section class="now-playing-screen hidden" id="nowPlayingScreen" aria-hidden="true">
+      <div class="now-playing-backdrop" id="fullscreenBackdrop" aria-hidden="true"></div>
+
+      <div class="fullscreen-shell">
+        <div class="fullscreen-topbar">
+          <div class="fullscreen-brand">
+            <img src="./favicon.svg" alt="" />
+            <span>RedBeat</span>
+          </div>
+
+          <button class="fullscreen-close" id="closeNowPlaying" type="button" aria-label="Fechar tela da música">⌄</button>
+        </div>
+
+        <div class="fullscreen-track-stage" id="fullscreenTrackStage">
+          <div class="fullscreen-art-column">
+            <div class="fullscreen-cover" id="fullscreenCover">R</div>
+          </div>
+
+          <div class="fullscreen-info">
+            <span class="eyebrow">TOCANDO AGORA</span>
+            <h2 id="fullscreenTitle">Nenhuma música</h2>
+            <p class="fullscreen-artist" id="fullscreenArtist">Escolha uma faixa</p>
+            <p class="fullscreen-meta" id="fullscreenMeta">—</p>
+
+            <div class="fullscreen-actions">
+              <button class="fullscreen-icon-btn" id="fullscreenPrevBtn" type="button" aria-label="Anterior">◀</button>
+              <button class="fullscreen-play-btn" id="fullscreenPlayBtn" type="button" aria-label="Reproduzir">▶</button>
+              <button class="fullscreen-icon-btn" id="fullscreenNextBtn" type="button" aria-label="Próxima">▶</button>
+              <button class="fullscreen-save-btn" id="fullscreenLikeBtn" type="button" aria-label="Salvar música">♡</button>
+            </div>
+
+            <div class="fullscreen-progress">
+              <input id="fullscreenSeekBar" type="range" min="0" max="100" value="0" step="0.1" aria-label="Progresso da música" />
+              <div>
+                <span id="fullscreenCurrentTime">0:00</span>
+                <span id="fullscreenDuration">0:00</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
   </div>
 
   <dialog class="modal" id="uploadModal">
