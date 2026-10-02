@@ -226,6 +226,22 @@
         <span class="genre-card-icon">◎</span>
         <span class="genre-card-copy"><strong>Regional</strong><small data-genre-count="Regional">0 músicas</small></span>
        </button>
+       <button class="genre-card genre-reggae" data-genre="Reggae" type="button">
+        <span class="genre-card-icon">☀</span>
+        <span class="genre-card-copy"><strong>Reggae</strong><small data-genre-count="Reggae">0 músicas</small></span>
+       </button>
+       <button class="genre-card genre-jazz" data-genre="Jazz" type="button">
+        <span class="genre-card-icon">♬</span>
+        <span class="genre-card-copy"><strong>Jazz</strong><small data-genre-count="Jazz">0 músicas</small></span>
+       </button>
+       <button class="genre-card genre-hiphop" data-genre="Hip-Hop/Rap" type="button">
+        <span class="genre-card-icon">▰</span>
+        <span class="genre-card-copy"><strong>Hip-Hop/Rap</strong><small data-genre-count="Hip-Hop/Rap">0 músicas</small></span>
+       </button>
+       <button class="genre-card genre-outros" data-genre="Outros" type="button">
+        <span class="genre-card-icon">＋</span>
+        <span class="genre-card-copy"><strong>Outros</strong><small data-genre-count="Outros">0 músicas</small></span>
+       </button>
       </div>
      </section>
      <section class="recent-section" id="recentSection">
@@ -589,17 +605,42 @@
       <span>
        Gênero
       </span>
-      <select id="trackGenre" required="">
-       <option value="">Selecione o gênero</option>
-       <option value="Eletrônica">Eletrônica</option>
-       <option value="Rock">Rock</option>
-       <option value="Funk">Funk</option>
-       <option value="Pagode">Pagode</option>
-       <option value="Sertanejo">Sertanejo</option>
-       <option value="Trap">Trap</option>
-       <option value="Pop">Pop</option>
-       <option value="Regional">Regional</option>
-      </select>
+      <div class="custom-select" id="genreSelect">
+       <button aria-expanded="false" aria-haspopup="listbox" class="custom-select-trigger" id="genreSelectButton" type="button">
+        <span id="genreSelectValue">Selecione o gênero</span>
+        <span aria-hidden="true" class="custom-select-chevron">⌄</span>
+       </button>
+       <div aria-label="Gêneros musicais" class="custom-select-menu hidden" id="genreSelectMenu" role="listbox">
+        <button class="custom-option placeholder" data-genre-option="" role="option" type="button">Selecione o gênero</button>
+        <button class="custom-option" data-genre-option="Eletrônica" role="option" type="button"><i class="genre-dot dot-eletronica"></i>Eletrônica</button>
+        <button class="custom-option" data-genre-option="Rock" role="option" type="button"><i class="genre-dot dot-rock"></i>Rock</button>
+        <button class="custom-option" data-genre-option="Funk" role="option" type="button"><i class="genre-dot dot-funk"></i>Funk</button>
+        <button class="custom-option" data-genre-option="Pagode" role="option" type="button"><i class="genre-dot dot-pagode"></i>Pagode</button>
+        <button class="custom-option" data-genre-option="Sertanejo" role="option" type="button"><i class="genre-dot dot-sertanejo"></i>Sertanejo</button>
+        <button class="custom-option" data-genre-option="Trap" role="option" type="button"><i class="genre-dot dot-trap"></i>Trap</button>
+        <button class="custom-option" data-genre-option="Pop" role="option" type="button"><i class="genre-dot dot-pop"></i>Pop</button>
+        <button class="custom-option" data-genre-option="Regional" role="option" type="button"><i class="genre-dot dot-regional"></i>Regional</button>
+        <button class="custom-option" data-genre-option="Reggae" role="option" type="button"><i class="genre-dot dot-reggae"></i>Reggae</button>
+        <button class="custom-option" data-genre-option="Jazz" role="option" type="button"><i class="genre-dot dot-jazz"></i>Jazz</button>
+        <button class="custom-option" data-genre-option="Hip-Hop/Rap" role="option" type="button"><i class="genre-dot dot-hiphop"></i>Hip-Hop/Rap</button>
+        <button class="custom-option" data-genre-option="Outros" role="option" type="button"><i class="genre-dot dot-outros"></i>Outros</button>
+       </div>
+       <select aria-hidden="true" class="native-select-proxy" id="trackGenre" tabindex="-1">
+        <option value="">Selecione o gênero</option>
+        <option value="Eletrônica">Eletrônica</option>
+        <option value="Rock">Rock</option>
+        <option value="Funk">Funk</option>
+        <option value="Pagode">Pagode</option>
+        <option value="Sertanejo">Sertanejo</option>
+        <option value="Trap">Trap</option>
+        <option value="Pop">Pop</option>
+        <option value="Regional">Regional</option>
+        <option value="Reggae">Reggae</option>
+        <option value="Jazz">Jazz</option>
+        <option value="Hip-Hop/Rap">Hip-Hop/Rap</option>
+        <option value="Outros">Outros</option>
+       </select>
+      </div>
      </label>
     </div>
     <label>

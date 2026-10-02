@@ -53,6 +53,10 @@ const MUSIC_GENRES = [
     "Trap",
     "Pop",
     "Regional",
+    "Reggae",
+    "Jazz",
+    "Hip-Hop/Rap",
+    "Outros",
 ];
 const $ = (selector) => document.querySelector(selector);
 const audio = $("#audio");
@@ -84,6 +88,11 @@ const recentGrid = $("#recentGrid");
 const genreGrid = $("#genreGrid");
 const genreSection = $("#genreSection");
 const clearGenreFilter = $("#clearGenreFilter");
+const genreSelect = $("#genreSelect");
+const genreSelectButton = $("#genreSelectButton");
+const genreSelectMenu = $("#genreSelectMenu");
+const genreSelectValue = $("#genreSelectValue");
+const trackGenreSelect = $("#trackGenre");
 const catalogBlock = $("#catalogBlock");
 const clearSearch = $("#clearSearch");
 const nowPlayingTrigger = $("#nowPlayingTrigger");
@@ -808,6 +817,87 @@ function getHomeTracks() {
         );
     });
 }
+
+function closeGenreSelect() {
+    genreSelectMenu?.classList.add("hidden");
+    genreSelectButton?.setAttribute("aria-expanded", "false");
+    genreSelect?.classList.remove("open");
+}
+
+function openGenreSelect() {
+    genreSelectMenu?.classList.remove("hidden");
+    genreSelectButton?.setAttribute("aria-expanded", "true");
+    genreSelect?.classList.add("open");
+}
+
+function setGenreSelectValue(value = "") {
+    const safeValue = MUSIC_GENRES.includes(value) ? value : "";
+    trackGenreSelect.value = safeValue;
+    genreSelectValue.textContent = safeValue || "Selecione o gênero";
+    genreSelectButton.classList.toggle("has-value", Boolean(safeValue));
+
+    genreSelectMenu?.querySelectorAll("[data-genre-option]").forEach((option) => {
+        const selected = option.dataset.genreOption === safeValue;
+        option.classList.toggle("selected", selected);
+        option.setAttribute("aria-selected", String(selected));
+    });
+}
+
+genreSelectButton?.addEventListener("click", () => {
+    if (genreSelectMenu.classList.contains("hidden")) {
+        openGenreSelect();
+    } else {
+        closeGenreSelect();
+    }
+});
+
+genreSelectMenu?.addEventListener("click", (event) => {
+    const option = event.target.closest("[data-genre-option]");
+    if (!option) {
+        return;
+    }
+    setGenreSelectValue(option.dataset.genreOption || "");
+    closeGenreSelect();
+    genreSelectButton.focus();
+});
+
+document.addEventListener("click", (event) => {
+    if (!genreSelect?.contains(event.target)) {
+        closeGenreSelect();
+    }
+});
+
+genreSelectButton?.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+        closeGenreSelect();
+        return;
+    }
+    if (event.key === "ArrowDown" || event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        openGenreSelect();
+        const selected = genreSelectMenu.querySelector(".custom-option.selected")
+            || genreSelectMenu.querySelector(".custom-option:not(.placeholder)");
+        selected?.focus();
+    }
+});
+
+genreSelectMenu?.addEventListener("keydown", (event) => {
+    const options = [...genreSelectMenu.querySelectorAll(".custom-option")];
+    const current = options.indexOf(document.activeElement);
+    if (event.key === "Escape") {
+        closeGenreSelect();
+        genreSelectButton.focus();
+        return;
+    }
+    if (event.key === "ArrowDown") {
+        event.preventDefault();
+        options[(current + 1 + options.length) % options.length]?.focus();
+    }
+    if (event.key === "ArrowUp") {
+        event.preventDefault();
+        options[(current - 1 + options.length) % options.length]?.focus();
+    }
+});
 
 function renderGenreCards() {
     for (const genre of MUSIC_GENRES) {
@@ -1574,6 +1664,8 @@ uploadForm.addEventListener("submit", async (event) => {
         progressText.textContent = "Música adicionada.";
         showToast("Música adicionada.");
         uploadForm.reset();
+        setGenreSelectValue("");
+        closeGenreSelect();
         selectedDurationSeconds = 0;
         $("#trackDuration").value = "Selecione um arquivo";
         fileLabel.textContent = "Clique ou arraste um arquivo de áudio";
@@ -2365,3 +2457,5 @@ siteScrollThumb?.addEventListener("pointerup", finishSiteScrollDrag);
 siteScrollThumb?.addEventListener("pointercancel", finishSiteScrollDrag);
 
 requestSiteScrollbarUpdate();
+
+setGenreSelectValue(trackGenreSelect?.value || "");
