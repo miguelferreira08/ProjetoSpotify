@@ -43,6 +43,17 @@ setPersistence(auth, browserLocalPersistence).catch(console.warn);
 const CHUNK_SIZE = 480 * 1024;
 const MAX_AUDIO_SIZE = 25 * 1024 * 1024;
 const MAX_COVER_SIZE = 10 * 1024 * 1024;
+const ADMIN_EMAIL = "miguelfer0808@gmail.com";
+const MUSIC_GENRES = [
+    "Eletrônica",
+    "Rock",
+    "Funk",
+    "Pagode",
+    "Sertanejo",
+    "Trap",
+    "Pop",
+    "Regional",
+];
 const $ = (selector) => document.querySelector(selector);
 const audio = $("#audio");
 const trackList = $("#trackList");
@@ -70,6 +81,9 @@ const appBackButton = $("#appBackButton");
 const homeHero = $("#homeHero");
 const recentSection = $("#recentSection");
 const recentGrid = $("#recentGrid");
+const genreGrid = $("#genreGrid");
+const genreSection = $("#genreSection");
+const clearGenreFilter = $("#clearGenreFilter");
 const catalogBlock = $("#catalogBlock");
 const clearSearch = $("#clearSearch");
 const nowPlayingTrigger = $("#nowPlayingTrigger");
@@ -89,6 +103,14 @@ const dropzone = $("#dropzone");
 const fileLabel = $("#fileLabel");
 const coverPreview = $("#coverPreview");
 const coverFileLabel = $("#coverFileLabel");
+const suggestionForm = $("#suggestionForm");
+const suggestionUserEmail = $("#suggestionUserEmail");
+const suggestionSongName = $("#suggestionSongName");
+const suggestionArtist = $("#suggestionArtist");
+const suggestionSubmit = $("#suggestionSubmit");
+const suggestionList = $("#suggestionList");
+const suggestionTotal = $("#suggestionTotal");
+const suggestionBadge = $("#suggestionBadge");
 let tracks = [];
 let visibleTracks = [];
 let currentTrack = null;
@@ -101,6 +123,9 @@ let selectedPlaylist = null;
 let currentLibraryTracks = [];
 let selectedActionTrack = null;
 let authMode = "login";
+let isAdminUser = false;
+let activeGenre = "";
+let suggestions = [];
 let repeat = false;
 let shuffle = false;
 let selectedDurationSeconds = 0;
@@ -111,6 +136,7 @@ let fullscreenCloseTimer = null;
 let unsubscribeTracks = null;
 let unsubscribeSaved = null;
 let unsubscribePlaylists = null;
+let unsubscribeSuggestions = null;
 const coverUrlCache = new Map();
 const audioUrlCache = new Map();
 const assetLoading = new Map();
@@ -175,8 +201,38 @@ function updateRange(input, percentage) {
   )`;
 }
 
-function isOwner(track) {
-    return Boolean(auth.currentUser) && track.ownerId === auth.currentUser.uid;
+function isAdminAccount(user = auth.currentUser) {
+    return Boolean(user?.email) && user.email.toLowerCase() === ADMIN_EMAIL;
+}
+
+function canManageCatalog() {
+    return isAdminUser && isAdminAccount();
+}
+
+function isOwner() {
+    return canManageCatalog();
+}
+
+function updateAdminUI(user) {
+    isAdminUser = isAdminAccount(user);
+
+    document.querySelectorAll(".admin-only").forEach((element) => {
+        element.classList.toggle("hidden", !isAdminUser);
+    });
+
+    const role = $("#accountRole");
+    const copy = $("#accountCopy");
+
+    if (role) {
+        role.textContent = isAdminUser ? "Administrador" : "Ouvinte";
+        role.classList.toggle("is-admin", isAdminUser);
+    }
+
+    if (copy) {
+        copy.textContent = isAdminUser
+            ? "Você administra o catálogo global. Somente esta conta pode adicionar ou excluir músicas."
+            : "Sua biblioteca e suas playlists ficam vinculadas à sua conta. O catálogo é administrado pelo RedBeat.";
+    }
 }
 // ==================== AUTENTICAÇÃO ====================
 
@@ -220,9 +276,11 @@ function stopSubscriptions() {
     unsubscribeTracks?.();
     unsubscribeSaved?.();
     unsubscribePlaylists?.();
+    unsubscribeSuggestions?.();
     unsubscribeTracks = null;
     unsubscribeSaved = null;
     unsubscribePlaylists = null;
+    unsubscribeSuggestions = null;
 }
 
 function subscribeAccountData(user) {
@@ -264,6 +322,100 @@ function subscribeAccountData(user) {
     });
 }
 
+
+function formatSuggestionDate(timestamp) {
+    if (!timestamp?.toDate) {
+        return "agora";
+    }
+
+    return new Intl.DateTimeFormat("pt-BR", {
+        day: "2-digit",
+        month: "2-digit",
+        year: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+    }).format(timestamp.toDate());
+}
+
+function renderSuggestions() {
+    const user = auth.currentUser;
+
+    if (suggestionUserEmail) {
+        suggestionUserEmail.value = user?.email || "";
+    }
+
+    if (!isAdminUser) {
+        suggestionBadge?.classList.add("hidden");
+        return;
+    }
+
+    const count = suggestions.length;
+    suggestionTotal.textContent = `${count} ${count === 1 ? "sugestão" : "sugestões"}`;
+    suggestionBadge.textContent = String(count);
+    suggestionBadge.classList.toggle("hidden", count === 0);
+
+    if (!count) {
+        suggestionList.innerHTML = `
+            <div class="suggestion-empty">
+                <strong>Nenhuma sugestão recebida</strong>
+                <span>As sugestões dos usuários aparecerão aqui.</span>
+            </div>
+        `;
+        return;
+    }
+
+    suggestionList.innerHTML = suggestions.map((suggestion) => `
+        <article class="suggestion-card" data-suggestion-id="${suggestion.id}">
+            <div class="suggestion-card-main">
+                <strong class="suggestion-card-title">${escapeHtml(suggestion.songName || "Música sem nome")}</strong>
+                <span class="suggestion-card-artist">${escapeHtml(suggestion.artist || "Artista não informado")}</span>
+                <div class="suggestion-card-meta">
+                    <span>${escapeHtml(suggestion.senderEmail || "Usuário")}</span>
+                    <span>${escapeHtml(formatSuggestionDate(suggestion.createdAt))}</span>
+                </div>
+            </div>
+            <button
+                class="suggestion-remove"
+                type="button"
+                data-action="remove-suggestion"
+                aria-label="Excluir sugestão"
+                title="Excluir sugestão"
+            >×</button>
+        </article>
+    `).join("");
+}
+
+function subscribeSuggestionsIfAdmin() {
+    unsubscribeSuggestions?.();
+    unsubscribeSuggestions = null;
+    suggestions = [];
+    renderSuggestions();
+
+    if (!isAdminUser) {
+        return;
+    }
+
+    const suggestionsQuery = query(
+        collection(db, "suggestions"),
+        orderBy("createdAt", "desc"),
+    );
+
+    unsubscribeSuggestions = onSnapshot(
+        suggestionsQuery,
+        (snapshot) => {
+            suggestions = snapshot.docs.map((document) => ({
+                id: document.id,
+                ...document.data(),
+            }));
+            renderSuggestions();
+        },
+        (error) => {
+            console.error("Sugestões:", error);
+            showToast("Não foi possível carregar as sugestões.", "error");
+        },
+    );
+}
+
 onAuthStateChanged(auth, async (user) => {
     if (user) {
         try {
@@ -278,10 +430,16 @@ onAuthStateChanged(auth, async (user) => {
         $("#profileLabel").textContent = name;
         $("#avatar").textContent = initials(name);
         $("#accountEmail").textContent = user.email || "Usuário";
+        updateAdminUI(user);
         subscribeAccountData(user);
+        subscribeSuggestionsIfAdmin();
+        renderSuggestions();
         return;
     }
     stopSubscriptions();
+    updateAdminUI(null);
+    suggestions = [];
+    renderSuggestions();
     tracks = [];
     playlists = [];
     savedTrackIds.clear();
@@ -621,16 +779,63 @@ async function hydrateListCovers(list, container) {
     }
 }
 
+function genreMatches(track, genre) {
+    return normalizeSearchValue(track.genre) === normalizeSearchValue(genre);
+}
+
 function getHomeTracks() {
     const term = normalizeSearchValue(searchInput.value);
-    if (!term) {
-        return tracks;
+    let list = tracks;
+
+    if (activeGenre) {
+        list = list.filter((track) => genreMatches(track, activeGenre));
     }
-    return tracks.filter((track) => {
+
+    if (!term) {
+        return list;
+    }
+
+    return list.filter((track) => {
         const searchableFields = [
-            track.title, track.artist, track.album, track.genre,
+            track.title,
+            track.artist,
+            track.album,
+            track.genre,
         ];
-        return searchableFields.some((value) => normalizeSearchValue(value).includes(term));
+
+        return searchableFields.some((value) =>
+            normalizeSearchValue(value).includes(term)
+        );
+    });
+}
+
+function renderGenreCards() {
+    for (const genre of MUSIC_GENRES) {
+        const count = tracks.filter((track) => genreMatches(track, genre)).length;
+        const counter = document.querySelector(`[data-genre-count="${CSS.escape(genre)}"]`);
+        const card = genreGrid?.querySelector(`[data-genre="${CSS.escape(genre)}"]`);
+
+        if (counter) {
+            counter.textContent = `${count} ${count === 1 ? "música" : "músicas"}`;
+        }
+
+        card?.classList.toggle("active", activeGenre === genre);
+    }
+
+    clearGenreFilter?.classList.toggle("hidden", !activeGenre);
+}
+
+function setGenreFilter(genre = "") {
+    activeGenre = MUSIC_GENRES.includes(genre) ? genre : "";
+    searchInput.value = "";
+    renderHome();
+    updateAppBackButton();
+
+    requestAnimationFrame(() => {
+        catalogBlock.scrollIntoView({
+            behavior: "smooth",
+            block: "start",
+        });
     });
 }
 
@@ -713,23 +918,40 @@ function renderHome() {
     visibleTracks = getHomeTracks();
     const term = searchInput.value.trim();
     const isSearching = Boolean(term);
+    const isGenreFiltered = Boolean(activeGenre);
+
     homeHero.classList.toggle("searching", isSearching);
-    recentSection.classList.toggle("searching", isSearching);
+    recentSection.classList.toggle("searching", isSearching || isGenreFiltered);
     clearSearch.classList.toggle("hidden", !isSearching);
+
     $("#catalogEyebrow").textContent = isSearching
-        ? "PESQUISA" : "CATÁLOGO";
+        ? "PESQUISA"
+        : isGenreFiltered
+            ? "GÊNERO"
+            : "CATÁLOGO";
+
     $("#catalogTitle").textContent = isSearching
-        ? `Resultados para “${term}”` : "Todas as músicas";
+        ? `Resultados para “${term}”`
+        : isGenreFiltered
+            ? activeGenre
+            : "Todas as músicas";
+
     const searchStatus = $("#searchStatus");
-    searchStatus.classList.toggle("hidden", !isSearching);
+    const hasStatus = isSearching || isGenreFiltered;
+    searchStatus.classList.toggle("hidden", !hasStatus);
     searchStatus.textContent = isSearching
-        ? `${visibleTracks.length} ${visibleTracks.length === 1 ? "resultado encontrado" : "resultados encontrados"} no catálogo salvo.` : "";
+        ? `${visibleTracks.length} ${visibleTracks.length === 1 ? "resultado encontrado" : "resultados encontrados"} no catálogo salvo.`
+        : isGenreFiltered
+            ? `${visibleTracks.length} ${visibleTracks.length === 1 ? "música" : "músicas"} em ${activeGenre}.`
+            : "";
     $("#trackCount").textContent = `${visibleTracks.length} ${visibleTracks.length === 1 ? "música" : "músicas"}`;
     trackList.innerHTML = trackRows(visibleTracks, "home");
     hydrateListCovers(visibleTracks, trackList);
-    if (!isSearching) {
+    if (!isSearching && !isGenreFiltered) {
         renderRecentTracks();
     }
+
+    renderGenreCards();
     updateHomeDashboard();
     syncCurrentIndex();
 }
@@ -884,7 +1106,7 @@ function canGoBackInsideApp() {
     if (activeView === "library") {
         return true;
     }
-    if (activeView === "home" && searchInput.value.trim()) {
+    if (activeView === "home" && (searchInput.value.trim() || activeGenre)) {
         return true;
     }
     return false;
@@ -899,12 +1121,12 @@ function updateAppBackButton() {
         appBackButton.setAttribute("aria-label", "Voltar para a biblioteca");
         return;
     }
-    if (activeView === "library") {
+    if (activeView === "library" || activeView === "suggestions") {
         appBackButton.title = "Voltar para o início";
         appBackButton.setAttribute("aria-label", "Voltar para o início");
         return;
     }
-    if (searchInput.value.trim()) {
+    if (searchInput.value.trim() || activeGenre) {
         appBackButton.title = "Voltar para todas as músicas";
         appBackButton.setAttribute("aria-label", "Voltar para todas as músicas");
         return;
@@ -918,14 +1140,14 @@ function goBackInsideApp() {
         showLibraryOverview();
         return;
     }
-    if (activeView === "library") {
+    if (activeView === "library" || activeView === "suggestions") {
         setView("home");
         return;
     }
-    if (activeView === "home" && searchInput.value.trim()) {
+    if (activeView === "home" && (searchInput.value.trim() || activeGenre)) {
         searchInput.value = "";
+        activeGenre = "";
         renderHome();
-        searchInput.focus();
         updateAppBackButton();
     }
 }
@@ -934,13 +1156,19 @@ function setView(view) {
     activeView = view;
     $("#homeView").classList.toggle("hidden", view !== "home");
     $("#libraryView").classList.toggle("hidden", view !== "library");
+    $("#suggestionView").classList.toggle("hidden", view !== "suggestions");
     $("#showHome").classList.toggle("active", view === "home");
     $("#showLibrary").classList.toggle("active", view === "library");
+    $("#showSuggestions").classList.toggle("active", view === "suggestions");
+
     if (view === "home") {
         renderHome();
     }
-    else {
+    else if (view === "library") {
         renderLibrary();
+    }
+    else {
+        renderSuggestions();
     }
     updateAppBackButton();
     pageScrollContainer?.scrollTo({
@@ -963,15 +1191,23 @@ function showLibraryDetail() {
     updateAppBackButton();
 }
 $("#showHome").addEventListener("click", () => {
+    activeGenre = "";
+    searchInput.value = "";
     setView("home");
 });
 $("#brandHome").addEventListener("click", (event) => {
     event.preventDefault();
+    activeGenre = "";
+    searchInput.value = "";
     setView("home");
 });
 $("#showLibrary").addEventListener("click", () => {
     setView("library");
     showLibraryOverview();
+});
+
+$("#showSuggestions").addEventListener("click", () => {
+    setView("suggestions");
 });
 $("#backLibrary").addEventListener("click", goBackInsideApp);
 appBackButton.addEventListener("click", goBackInsideApp);
@@ -980,6 +1216,7 @@ $("#openSavedTracks").addEventListener("click", () => {
     showLibraryDetail();
 });
 searchInput.addEventListener("input", () => {
+    activeGenre = "";
     if (activeView !== "home") {
         setView("home");
     }
@@ -996,10 +1233,24 @@ searchInput.addEventListener("keydown", (event) => {
 });
 clearSearch.addEventListener("click", () => {
     searchInput.value = "";
+    activeGenre = "";
     searchInput.focus();
     renderHome();
     updateAppBackButton();
 });
+genreGrid?.addEventListener("click", (event) => {
+    const card = event.target.closest("[data-genre]");
+    if (!card) {
+        return;
+    }
+
+    setGenreFilter(card.dataset.genre || "");
+});
+
+clearGenreFilter?.addEventListener("click", () => {
+    setGenreFilter("");
+});
+
 recentGrid.addEventListener("click", (event) => {
     const card = event.target.closest("[data-track-id]");
     if (!card) {
@@ -1011,7 +1262,7 @@ recentGrid.addEventListener("click", (event) => {
     }
 });
 $("#heroPlayBtn").addEventListener("click", () => {
-    const firstTrack = tracks[0];
+    const firstTrack = getHomeTracks()[0] || tracks[0];
     if (firstTrack) {
         playTrack(firstTrack);
     }
@@ -1024,6 +1275,11 @@ $("#heroLibraryBtn").addEventListener("click", () => {
     showLibraryOverview();
 });
 $("#heroUploadBtn").addEventListener("click", () => {
+    if (!canManageCatalog()) {
+        showToast("Somente o administrador pode adicionar músicas.", "error");
+        return;
+    }
+
     uploadModal.showModal();
 });
 $("#catalogStat").addEventListener("click", () => {
@@ -1086,7 +1342,7 @@ function openTrackActions(track) {
     $("#actionTrackTitle").textContent = track.title;
     $("#actionSaveTrack").textContent = savedTrackIds.has(track.id)
         ? "Remover da biblioteca" : "Salvar na biblioteca";
-    $("#actionDeleteTrack").classList.toggle("hidden", !isOwner(track));
+    $("#actionDeleteTrack").classList.toggle("hidden", !canManageCatalog());
     $("#actionPlaylistList").innerHTML = playlists.length
         ? playlists
             .map((playlist) => ` <button
@@ -1162,6 +1418,11 @@ function listClickHandler(event) {
 trackList.addEventListener("click", listClickHandler);
 libraryTrackList.addEventListener("click", listClickHandler);
 $("#openUpload").addEventListener("click", () => {
+    if (!canManageCatalog()) {
+        showToast("Somente o administrador pode adicionar músicas.", "error");
+        return;
+    }
+
     uploadModal.showModal();
 });
 audioFile.addEventListener("change", async () => {
@@ -1227,14 +1488,26 @@ dropzone.addEventListener("drop", (event) => {
 uploadForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     const user = auth.currentUser;
+
+    if (!user || !canManageCatalog()) {
+        showToast("Somente o administrador pode adicionar músicas.", "error");
+        uploadModal.close();
+        return;
+    }
+
     const music = audioFile.files?.[0];
     const image = coverFile.files?.[0];
     const title = $("#trackTitle").value.trim();
     const artist = $("#trackArtist").value.trim();
     const album = $("#trackAlbum").value.trim();
     const genre = $("#trackGenre").value.trim();
-    if (!user ||
-        !music || !image || !title || !artist || !album || !genre) {
+
+    if (!MUSIC_GENRES.includes(genre)) {
+        showToast("Selecione um gênero válido.", "error");
+        return;
+    }
+
+    if (!music || !image || !title || !artist || !album || !genre) {
         showToast("Preencha todos os dados e selecione áudio e capa.", "error");
         return;
     }
@@ -1341,8 +1614,12 @@ uploadForm.addEventListener("submit", async (event) => {
 });
 
 async function deleteTrack(track) {
-    if (!isOwner(track) ||
-        !confirm(`Excluir “${track.title}”?`)) {
+    if (!canManageCatalog()) {
+        showToast("Somente o administrador pode excluir músicas.", "error");
+        return;
+    }
+
+    if (!confirm(`Excluir “${track.title}”?`)) {
         return;
     }
     const trackRef = doc(db, "tracks", track.id);
@@ -1372,6 +1649,82 @@ async function deleteTrack(track) {
         showToast("Não foi possível excluir.", "error");
     }
 }
+
+
+suggestionForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+
+    const user = auth.currentUser;
+    const songName = suggestionSongName.value.trim();
+    const artist = suggestionArtist.value.trim();
+
+    if (!user) {
+        showToast("Entre na sua conta para enviar uma sugestão.", "error");
+        return;
+    }
+
+    if (!songName || !artist) {
+        showToast("Informe o nome da música e o artista.", "error");
+        return;
+    }
+
+    suggestionSubmit.disabled = true;
+    suggestionSubmit.textContent = "Enviando…";
+
+    try {
+        const suggestionRef = doc(collection(db, "suggestions"));
+
+        await setDoc(suggestionRef, {
+            senderUid: user.uid,
+            senderEmail: user.email || "",
+            recipientEmail: ADMIN_EMAIL,
+            recipientLabel: "Administrador",
+            songName,
+            artist,
+            status: "new",
+            createdAt: serverTimestamp(),
+        });
+
+        suggestionSongName.value = "";
+        suggestionArtist.value = "";
+        showToast("Sugestão enviada ao administrador.");
+    }
+    catch (error) {
+        console.error("Enviar sugestão:", error);
+        showToast("Não foi possível enviar a sugestão.", "error");
+    }
+    finally {
+        suggestionSubmit.disabled = false;
+        suggestionSubmit.textContent = "Enviar sugestão";
+    }
+});
+
+suggestionList.addEventListener("click", async (event) => {
+    const button = event.target.closest('[data-action="remove-suggestion"]');
+
+    if (!button || !canManageCatalog()) {
+        return;
+    }
+
+    const card = button.closest("[data-suggestion-id]");
+    const suggestionId = card?.dataset.suggestionId;
+
+    if (!suggestionId) {
+        return;
+    }
+
+    try {
+        button.disabled = true;
+        await deleteDoc(doc(db, "suggestions", suggestionId));
+        showToast("Sugestão removida.");
+    }
+    catch (error) {
+        console.error("Excluir sugestão:", error);
+        button.disabled = false;
+        showToast("Não foi possível excluir a sugestão.", "error");
+    }
+});
+
 // ==================== PLAYER E TELA CHEIA ====================
 
 function isNowPlayingScreenOpen() {

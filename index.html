@@ -73,6 +73,10 @@
      <button class="nav-btn" id="showLibrary">
       Biblioteca
      </button>
+     <button class="nav-btn" id="showSuggestions">
+      Sugestão
+      <span class="suggestion-badge hidden" id="suggestionBadge">0</span>
+     </button>
     </nav>
     <div class="search-box" id="searchBox" role="search">
      <span aria-hidden="true">
@@ -84,7 +88,7 @@
      </button>
     </div>
     <div class="top-actions">
-     <button class="primary-btn compact" id="openUpload">
+     <button class="primary-btn compact admin-only hidden" id="openUpload">
       ＋ Adicionar
      </button>
      <button aria-label="Abrir conta" class="profile-btn" id="profileBtn">
@@ -119,7 +123,7 @@
         <button class="secondary-btn home-action" id="heroLibraryBtn" type="button">
          Biblioteca
         </button>
-        <button class="ghost-action" id="heroUploadBtn" type="button">
+        <button class="ghost-action admin-only hidden" id="heroUploadBtn" type="button">
          ＋ Música
         </button>
        </div>
@@ -170,6 +174,58 @@
         <i>
         </i>
        </div>
+      </div>
+     </section>
+     <section class="genre-section" id="genreSection">
+      <div class="genre-heading">
+       <div>
+        <span class="eyebrow">
+         EXPLORE POR ESTILO
+        </span>
+        <h2>
+         Gêneros musicais
+        </h2>
+        <p>
+         Escolha um gênero para abrir somente as músicas dessa categoria.
+        </p>
+       </div>
+       <button class="genre-clear hidden" id="clearGenreFilter" type="button">
+        Ver todos
+       </button>
+      </div>
+      <div class="genre-grid" id="genreGrid">
+       <button class="genre-card genre-eletronica" data-genre="Eletrônica" type="button">
+        <span class="genre-card-icon">⌁</span>
+        <span class="genre-card-copy"><strong>Eletrônica</strong><small data-genre-count="Eletrônica">0 músicas</small></span>
+       </button>
+       <button class="genre-card genre-rock" data-genre="Rock" type="button">
+        <span class="genre-card-icon">ϟ</span>
+        <span class="genre-card-copy"><strong>Rock</strong><small data-genre-count="Rock">0 músicas</small></span>
+       </button>
+       <button class="genre-card genre-funk" data-genre="Funk" type="button">
+        <span class="genre-card-icon">◉</span>
+        <span class="genre-card-copy"><strong>Funk</strong><small data-genre-count="Funk">0 músicas</small></span>
+       </button>
+       <button class="genre-card genre-pagode" data-genre="Pagode" type="button">
+        <span class="genre-card-icon">◌</span>
+        <span class="genre-card-copy"><strong>Pagode</strong><small data-genre-count="Pagode">0 músicas</small></span>
+       </button>
+       <button class="genre-card genre-sertanejo" data-genre="Sertanejo" type="button">
+        <span class="genre-card-icon">◇</span>
+        <span class="genre-card-copy"><strong>Sertanejo</strong><small data-genre-count="Sertanejo">0 músicas</small></span>
+       </button>
+       <button class="genre-card genre-trap" data-genre="Trap" type="button">
+        <span class="genre-card-icon">△</span>
+        <span class="genre-card-copy"><strong>Trap</strong><small data-genre-count="Trap">0 músicas</small></span>
+       </button>
+       <button class="genre-card genre-pop" data-genre="Pop" type="button">
+        <span class="genre-card-icon">✦</span>
+        <span class="genre-card-copy"><strong>Pop</strong><small data-genre-count="Pop">0 músicas</small></span>
+       </button>
+       <button class="genre-card genre-regional" data-genre="Regional" type="button">
+        <span class="genre-card-icon">◎</span>
+        <span class="genre-card-copy"><strong>Regional</strong><small data-genre-count="Regional">0 músicas</small></span>
+       </button>
       </div>
      </section>
      <section class="recent-section" id="recentSection">
@@ -304,6 +360,48 @@
       </div>
       <div class="track-list" id="libraryTrackList">
       </div>
+     </div>
+    </section>
+    <section class="view hidden suggestion-view" id="suggestionView">
+     <div class="suggestion-layout">
+      <section class="suggestion-panel">
+       <span class="eyebrow">SUGESTÕES</span>
+       <h1>Indique uma música</h1>
+       <p class="suggestion-intro">Envie uma música para o administrador avaliar e, se aprovada, adicionar ao catálogo do RedBeat.</p>
+       <form class="suggestion-form" id="suggestionForm">
+        <label>
+         <span>Usuário</span>
+         <input id="suggestionUserEmail" type="email" readonly/>
+        </label>
+        <label>
+         <span>Para</span>
+         <input id="suggestionRecipient" type="text" value="Administrador" readonly/>
+        </label>
+        <label>
+         <span>Nome da música</span>
+         <input id="suggestionSongName" type="text" maxlength="120" placeholder="Ex.: Nome da música" required/>
+        </label>
+        <label>
+         <span>Artista</span>
+         <input id="suggestionArtist" type="text" maxlength="120" placeholder="Ex.: Nome do artista" required/>
+        </label>
+        <button class="primary-btn suggestion-submit" id="suggestionSubmit" type="submit">
+         Enviar sugestão
+        </button>
+       </form>
+      </section>
+
+      <section class="suggestion-inbox admin-only hidden" id="suggestionInbox">
+       <div class="suggestion-inbox-head">
+        <div>
+         <span class="eyebrow">ADMINISTRAÇÃO</span>
+         <h2>Sugestões recebidas</h2>
+        </div>
+        <span class="suggestion-total" id="suggestionTotal">0 sugestões</span>
+       </div>
+       <div class="suggestion-list" id="suggestionList">
+       </div>
+      </section>
      </div>
     </section>
    </main>
@@ -491,7 +589,17 @@
       <span>
        Gênero
       </span>
-      <input id="trackGenre" maxlength="50" placeholder="Ex.: Funk" required=""/>
+      <select id="trackGenre" required="">
+       <option value="">Selecione o gênero</option>
+       <option value="Eletrônica">Eletrônica</option>
+       <option value="Rock">Rock</option>
+       <option value="Funk">Funk</option>
+       <option value="Pagode">Pagode</option>
+       <option value="Sertanejo">Sertanejo</option>
+       <option value="Trap">Trap</option>
+       <option value="Pop">Pop</option>
+       <option value="Regional">Regional</option>
+      </select>
      </label>
     </div>
     <label>
@@ -573,7 +681,10 @@
     <h2 id="accountEmail">
      Usuário
     </h2>
-    <p class="modal-copy">
+    <div class="account-role" id="accountRole">
+     Ouvinte
+    </div>
+    <p class="modal-copy" id="accountCopy">
      Sua biblioteca e playlists ficam vinculadas à sua conta.
     </p>
     <button class="secondary-btn full" id="logoutBtn">
