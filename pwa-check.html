@@ -3,7 +3,7 @@
  try {
   const reg=await navigator.serviceWorker.register('./service-worker.js',{scope:'./'});
   await navigator.serviceWorker.ready;
-  const cache=await caches.open('redbeat-app-v24');
+  const cache=await caches.open('redbeat-app-v27');
   const keys=await cache.keys();
   document.body.dataset.status='ok';
   document.body.textContent='SW_OK CACHE_ITEMS='+keys.length+' SCOPE='+reg.scope;

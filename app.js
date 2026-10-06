@@ -96,8 +96,10 @@ const coverFile = $("#coverFile");
 const uploadModal = $("#uploadModal");
 const createPlaylistModal = $("#createPlaylistModal");
 const trackActionsModal = $("#trackActionsModal");
+const editTrackModal = $("#editTrackModal");
 const accountModal = $("#accountModal");
 const uploadForm = $("#uploadForm");
+const editTrackForm = $("#editTrackForm");
 const gateAuthForm = $("#gateAuthForm");
 const playerTitle = $("#playerTitle");
 const playerArtist = $("#playerArtist");
@@ -1203,6 +1205,44 @@ $("#playlistGrid").addEventListener("click", async (event) => {
 // ============================================================================
 // Aqui ficam upload, exclusão, salvar/desfavoritar, sugestões e menu das faixas.
 
+// ============================================================================
+// EDIÇÃO DE MÚSICAS EXISTENTES
+// ============================================================================
+// A edição altera apenas os metadados do documento principal tracks/{trackId}.
+// Os chunks de áudio e capa não são recriados, porque o objetivo desta tela é
+// corrigir título, artista, álbum ou gênero sem reenviar arquivos grandes.
+//
+// Fluxo:
+// 1. o administrador abre o menu "⋯" da música;
+// 2. clica em "Editar música";
+// 3. openEditTrackModal() copia os dados atuais para o formulário;
+// 4. no submit, os campos são validados;
+// 5. updateDoc() grava somente os campos alteráveis e updatedAt;
+// 6. o listener em tempo real de auth.js recebe a alteração;
+// 7. renderHome()/renderLibrary()/refreshCurrentTrack() refletem os novos dados.
+//
+// A interface oculta o recurso para ouvintes, mas a proteção real continua nas
+// Firestore Rules, que permitem update em tracks somente para o administrador.
+// ============================================================================
+
+function openEditTrackModal(track) {
+    if (!canManageCatalog()) {
+        showToast("Somente o administrador pode editar músicas.", "error");
+        return;
+    }
+
+    selectedActionTrack = track;
+    $("#editTrackTitle").value = track.title || "";
+    $("#editTrackArtist").value = track.artist || "";
+    $("#editTrackAlbum").value = track.album || "";
+    $("#editTrackGenre").value = MUSIC_GENRES.includes(track.genre)
+        ? track.genre
+        : "Outros";
+    $("#editTrackCurrentName").textContent = `${track.title || "Faixa"} • ${track.artist || "Artista"}`;
+
+    editTrackModal.showModal();
+}
+
 /**
  * Abre o modal de ações para uma faixa específica.
  *
@@ -1214,6 +1254,7 @@ function openTrackActions(track) {
     $("#actionTrackTitle").textContent = track.title;
     $("#actionSaveTrack").textContent = savedTrackIds.has(track.id)
         ? "Remover da biblioteca" : "Salvar na biblioteca";
+    $("#actionEditTrack").classList.toggle("hidden", !canManageCatalog());
     $("#actionDeleteTrack").classList.toggle("hidden", !canManageCatalog());
     $("#actionPlaylistList").innerHTML = playlists.length
         ? playlists
@@ -1245,6 +1286,63 @@ $("#actionPlaylistList").addEventListener("click", async (event) => {
         trackActionsModal.close();
     }
 });
+$("#actionEditTrack").addEventListener("click", () => {
+    if (!selectedActionTrack) {
+        return;
+    }
+
+    const track = selectedActionTrack;
+    trackActionsModal.close();
+    openEditTrackModal(track);
+});
+
+editTrackForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+
+    if (!selectedActionTrack || !canManageCatalog()) {
+        showToast("Somente o administrador pode editar músicas.", "error");
+        editTrackModal.close();
+        return;
+    }
+
+    const title = $("#editTrackTitle").value.trim();
+    const artist = $("#editTrackArtist").value.trim();
+    const album = $("#editTrackAlbum").value.trim();
+    const genre = $("#editTrackGenre").value.trim();
+
+    if (!title || !artist || !album || !MUSIC_GENRES.includes(genre)) {
+        showToast("Preencha título, artista, álbum e gênero corretamente.", "error");
+        return;
+    }
+
+    const submit = $("#editTrackSubmit");
+    const trackId = selectedActionTrack.id;
+
+    submit.disabled = true;
+    submit.textContent = "Salvando…";
+
+    try {
+        await updateDoc(doc(db, "tracks", trackId), {
+            title,
+            artist,
+            album,
+            genre,
+            updatedAt: serverTimestamp(),
+        });
+
+        editTrackModal.close();
+        showToast("Música atualizada.");
+    }
+    catch (error) {
+        console.error("Editar música:", error);
+        showToast(`Não foi possível editar (${error.code || "erro"}).`, "error");
+    }
+    finally {
+        submit.disabled = false;
+        submit.textContent = "Salvar alterações";
+    }
+});
+
 $("#actionDeleteTrack").addEventListener("click", async () => {
     if (selectedActionTrack) {
         trackActionsModal.close();
@@ -2335,7 +2433,7 @@ document
     });
 });
 [
-    uploadModal, createPlaylistModal, trackActionsModal, accountModal,
+    uploadModal, createPlaylistModal, trackActionsModal, editTrackModal, accountModal,
 ].forEach((modal) => {
     modal.addEventListener("click", (event) => {
         const rect = modal.getBoundingClientRect();

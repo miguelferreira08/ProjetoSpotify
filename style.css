@@ -222,7 +222,7 @@ button {
     font-weight: 750;
 }
 
-.auth-form input,.modal input:not([type=file]) {
+.auth-form input,.modal input:not([type=file]),.modal select {
     width: 100%;
     border: 1px solid #333;
     outline: 0;
@@ -232,7 +232,7 @@ button {
     padding: 13px;
 }
 
-.auth-form input:focus,.modal input:not([type=file]):focus {
+.auth-form input:focus,.modal input:not([type=file]):focus,.modal select:focus {
     border-color: var(--red);
     box-shadow: 0 0 0 3px rgba(229,9,20,.1);
 }
@@ -887,6 +887,31 @@ input[type=range]:hover::-webkit-slider-thumb {
     color: var(--muted);
     font-size: 13px;
     line-height: 1.5;
+}
+
+.edit-track-summary {
+    display: grid;
+    gap: 4px;
+    padding: 12px 14px;
+    border: 1px solid rgba(255,255,255,.08);
+    border-radius: 11px;
+    background: rgba(255,255,255,.025);
+}
+
+.edit-track-summary span {
+    color: #777;
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+}
+
+.edit-track-summary strong {
+    overflow: hidden;
+    color: #f5f5f5;
+    font-size: 13px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .modal-close {
@@ -3623,12 +3648,31 @@ select option:checked {
     place-items: center;
     border: 1px solid rgba(255,255,255,.13);
     border-radius: 14px;
-    background: rgba(0,0,0,.32);
-    color: color-mix(in srgb,var(--genre-a) 82%,white 18%);
-    font-size: 27px;
-    font-weight: 900;
+    background: rgba(0,0,0,.34);
     box-shadow: 0 8px 24px rgba(0,0,0,.22);
     backdrop-filter: blur(8px);
+}
+
+/*
+ * Os ícones enviados pelo usuário possuem formatos e cores de origem diferentes.
+ * Em vez de exibir os pixels originais, o PNG é usado como MÁSCARA: somente a
+ * transparência define o desenho e o `background` abaixo define uma única cor.
+ * Isso deixa todos os 12 cards visualmente consistentes sem redesenhar os ícones.
+ */
+.genre-card-icon::before {
+    content: "";
+    width: 31px;
+    height: 31px;
+    background: #f4f4f4;
+    -webkit-mask-image: var(--genre-icon);
+    mask-image: var(--genre-icon);
+    -webkit-mask-repeat: no-repeat;
+    mask-repeat: no-repeat;
+    -webkit-mask-position: center;
+    mask-position: center;
+    -webkit-mask-size: contain;
+    mask-size: contain;
+    filter: drop-shadow(0 0 7px rgba(255,255,255,.12));
 }
 
 .genre-card-copy {
@@ -3647,6 +3691,7 @@ select option:checked {
 }
 
 .genre-eletronica {
+    --genre-icon: url("./assets/genre-icons/eletronica.png");
     --genre-a: #24d8ff;
     --genre-b: #061923;
     --genre-glow: rgba(36,216,255,.24);
@@ -3655,6 +3700,7 @@ select option:checked {
 }
 
 .genre-rock {
+    --genre-icon: url("./assets/genre-icons/rock.png");
     --genre-a: #ff3145;
     --genre-b: #260609;
     --genre-glow: rgba(255,49,69,.25);
@@ -3663,6 +3709,7 @@ select option:checked {
 }
 
 .genre-funk {
+    --genre-icon: url("./assets/genre-icons/funk.png");
     --genre-a: #ff0f24;
     --genre-b: #2a0408;
     --genre-glow: rgba(255,15,36,.3);
@@ -3671,6 +3718,7 @@ select option:checked {
 }
 
 .genre-pagode {
+    --genre-icon: url("./assets/genre-icons/pagode.png");
     --genre-a: #f6a623;
     --genre-b: #251705;
     --genre-glow: rgba(246,166,35,.25);
@@ -3679,6 +3727,7 @@ select option:checked {
 }
 
 .genre-sertanejo {
+    --genre-icon: url("./assets/genre-icons/sertanejo.png");
     --genre-a: #d77a35;
     --genre-b: #241206;
     --genre-glow: rgba(215,122,53,.25);
@@ -3687,15 +3736,17 @@ select option:checked {
 }
 
 .genre-trap {
+    --genre-icon: url("./assets/genre-icons/trap.png");
     --genre-a: #a15cff;
     --genre-b: #160924;
     --genre-glow: rgba(161,92,255,.27);
     --genre-image: url("./assets/genres/trap.png");
-    --genre-size: 84% auto;
+    --genre-size: cover;
     --genre-position: center center;
 }
 
 .genre-pop {
+    --genre-icon: url("./assets/genre-icons/pop.png");
     --genre-a: #ff4fc4;
     --genre-b: #26091d;
     --genre-glow: rgba(255,79,196,.25);
@@ -3704,6 +3755,7 @@ select option:checked {
 }
 
 .genre-regional {
+    --genre-icon: url("./assets/genre-icons/regional.png");
     --genre-a: #56d47b;
     --genre-b: #071e10;
     --genre-glow: rgba(86,212,123,.23);
@@ -3713,6 +3765,7 @@ select option:checked {
 }
 
 .genre-reggae {
+    --genre-icon: url("./assets/genre-icons/reggae.png");
     --genre-a: #f5d547;
     --genre-b: #1b1805;
     --genre-glow: rgba(245,213,71,.24);
@@ -3721,6 +3774,7 @@ select option:checked {
 }
 
 .genre-jazz {
+    --genre-icon: url("./assets/genre-icons/jazz.png");
     --genre-a: #56a8ff;
     --genre-b: #07182b;
     --genre-glow: rgba(86,168,255,.25);
@@ -3729,6 +3783,7 @@ select option:checked {
 }
 
 .genre-hiphop {
+    --genre-icon: url("./assets/genre-icons/hiphop.png");
     --genre-a: #ff7b38;
     --genre-b: #241006;
     --genre-glow: rgba(255,123,56,.27);
@@ -3737,6 +3792,7 @@ select option:checked {
 }
 
 .genre-outros {
+    --genre-icon: url("./assets/genre-icons/outros.png");
     --genre-a: #a4a4a4;
     --genre-b: #181818;
     --genre-glow: rgba(164,164,164,.18);
@@ -3772,7 +3828,11 @@ select option:checked {
     .genre-card-icon {
         width: 40px;
         height: 40px;
-        font-size: 23px;
+    }
+
+    .genre-card-icon::before {
+        width: 27px;
+        height: 27px;
     }
 
     .genre-card-copy strong {

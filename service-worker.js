@@ -25,7 +25,7 @@
 
 // Nome/versionamento lógico do cache. Quando arquivos funcionais do app shell
 // mudarem, incrementar a versão força a fase `activate` a remover o cache antigo.
-const CACHE_NAME = "redbeat-app-v24";
+const CACHE_NAME = "redbeat-app-v27";
 
 // Lista fechada de arquivos que devem estar disponíveis logo após a instalação.
 // `cache.addAll()` falha se um item obrigatório não puder ser baixado; por isso
@@ -33,8 +33,8 @@ const CACHE_NAME = "redbeat-app-v24";
 const APP_SHELL = [
     "./",
     "./index.html",
-    "./style.css?v=24",
-    "./app.js?v=24",
+    "./style.css?v=27",
+    "./app.js?v=27",
     "./auth.js",
     "./config.js",
     "./firebase.js",
@@ -44,7 +44,7 @@ const APP_SHELL = [
     "./utils.js",
     "./pwa.js",
     "./manifest.webmanifest",
-    "./favicon.svg?v=24",
+    "./favicon.svg?v=27",
     "./icons/icon-192.png",
     "./icons/icon-512.png",
     "./icons/icon-maskable-512.png",
@@ -60,7 +60,19 @@ const APP_SHELL = [
     "./assets/genres/reggae.png",
     "./assets/genres/jazz.png",
     "./assets/genres/hiphop.png",
-    "./assets/genres/outros.png"
+    "./assets/genres/outros.png",
+    "./assets/genre-icons/eletronica.png",
+    "./assets/genre-icons/rock.png",
+    "./assets/genre-icons/funk.png",
+    "./assets/genre-icons/pagode.png",
+    "./assets/genre-icons/sertanejo.png",
+    "./assets/genre-icons/trap.png",
+    "./assets/genre-icons/pop.png",
+    "./assets/genre-icons/regional.png",
+    "./assets/genre-icons/reggae.png",
+    "./assets/genre-icons/jazz.png",
+    "./assets/genre-icons/hiphop.png",
+    "./assets/genre-icons/outros.png"
 ];
 
 // --------------------------------------------------------------------------
