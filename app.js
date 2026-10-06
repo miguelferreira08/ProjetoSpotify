@@ -40,6 +40,52 @@ import {
 import { initAuth } from "./auth.js";
 import { initScrollbar } from "./scrollbar.js";
 import { initPWA } from "./pwa.js";
+// ============================================================================
+// APP.JS — CONTROLADOR PRINCIPAL DA INTERFACE DO REDBEAT
+// ============================================================================
+//
+// PAPEL DESTE ARQUIVO
+// -------------------
+// Este é o ponto central da interface do RedBeat. Ele não faz tudo sozinho:
+// tarefas especializadas foram separadas em outros módulos. O app.js coordena
+// esses módulos e mantém o estado que precisa ser refletido na tela.
+//
+// MÓDULOS UTILIZADOS
+// ------------------
+// firebase.js   -> entrega as conexões `auth` e `db` já inicializadas.
+// config.js     -> concentra limites, gêneros permitidos e configuração do admin.
+// utils.js      -> funções pequenas de texto, tempo, tamanho e normalização.
+// media.js      -> lê duração, comprime áudio e otimiza capas.
+// storage.js    -> grava/lê chunks do Firestore e cria URLs temporárias de mídia.
+// auth.js       -> controla login, cadastro, logout e listeners da conta.
+// scrollbar.js  -> controla a barra de rolagem personalizada.
+// pwa.js        -> registra o Service Worker e controla a instalação da PWA.
+//
+// FLUXO GERAL DE EXECUÇÃO
+// -----------------------
+// 1. O navegador carrega index.html.
+// 2. O <script type="module"> carrega este app.js.
+// 3. Os imports acima carregam os módulos especializados.
+// 4. O código obtém referências dos elementos HTML que serão manipulados.
+// 5. O estado inicial é criado: músicas, playlists, faixa atual, filtros etc.
+// 6. Os event listeners são registrados para cliques, formulários e player.
+// 7. No fim do arquivo, initAuth(), initScrollbar() e initPWA() são chamados.
+// 8. auth.js observa a sessão Firebase. Quando existe um usuário autenticado,
+//    ele inicia listeners em tempo real do Firestore e envia os novos dados
+//    de volta para este arquivo por callbacks.
+// 9. Este arquivo atualiza `tracks`, `playlists` e `savedTrackIds` e chama as
+//    funções renderHome(), renderLibrary() e updatePlayerUI().
+// 10. Quando o usuário toca uma faixa, storage.js reconstrói o arquivo de áudio
+//     a partir dos chunks e o elemento <audio> realiza a reprodução.
+//
+// IMPORTANTE SOBRE ESTADO
+// ----------------------
+// O HTML não é a fonte principal dos dados. Variáveis como `tracks`,
+// `savedTrackIds`, `currentTrack` e `playlists` guardam o estado atual.
+// As funções `render...()` pegam esse estado e redesenham a interface.
+// ============================================================================
+
+// Atalho para buscar elementos no DOM.
 const $ = (selector) => document.querySelector(selector);
 const audio = $("#audio");
 const trackList = $("#trackList");
@@ -102,6 +148,32 @@ const suggestionSubmit = $("#suggestionSubmit");
 const suggestionList = $("#suggestionList");
 const suggestionTotal = $("#suggestionTotal");
 const suggestionBadge = $("#suggestionBadge");
+// ============================================================================
+// ESTADO DO APLICATIVO
+// ============================================================================
+// Estas variáveis funcionam como a "memória em execução" da página.
+// Elas não substituem o Firestore: representam apenas a cópia atual dos dados
+// necessária para montar a interface e controlar a reprodução.
+//
+// `tracks`               -> catálogo completo recebido do Firestore.
+// `visibleTracks`        -> subconjunto de tracks após busca/filtro de gênero.
+// `currentTrack`         -> objeto da música atualmente selecionada.
+// `currentIndex`         -> posição da faixa atual dentro da lista em reprodução.
+// `playlists`            -> playlists pertencentes ao usuário autenticado.
+// `savedTrackIds`        -> Set com IDs das músicas salvas; Set torna a consulta
+//                           `savedTrackIds.has(id)` rápida e simples.
+// `activeView`           -> qual tela principal está visível: home/library/etc.
+// `libraryMode`          -> visão geral, salvas ou uma playlist específica.
+// `selectedPlaylist`     -> playlist aberta no momento.
+// `currentLibraryTracks` -> faixas mostradas no detalhe da Biblioteca.
+// `selectedActionTrack`  -> faixa cujo menu de ações está aberto.
+// `isAdminUser`          -> controla apenas a interface administrativa; a
+//                           autorização real continua nas regras do Firestore.
+// `activeGenre`          -> gênero usado como filtro na Home.
+// `repeat` / `shuffle`   -> opções do player.
+// `selectedDurationSeconds` -> duração detectada do arquivo antes do upload.
+// `playbackRequestId`    -> evita corrida entre dois carregamentos de áudio.
+// ============================================================================
 let tracks = [];
 let visibleTracks = [];
 let currentTrack = null;
@@ -123,8 +195,29 @@ let toastTimer = null;
 let playbackRequestId = 0;
 let fullscreenCloseTimer = null;
 audio.volume = Number(volumeBar.value);
-// ==================== UTILITÁRIOS ====================
+// ============================================================================
+// UTILITÁRIOS DA INTERFACE
+// ============================================================================
+// Funções pequenas usadas somente por esta página. Diferente de utils.js,
+// estas funções conhecem elementos do DOM ou o estado do RedBeat e, por isso,
+// permanecem aqui.
+// ============================================================================
 
+/**
+ * Exibe uma mensagem temporária no canto da interface.
+ *
+ * Quando executa:
+ * - após ações bem-sucedidas, como salvar/adicionar música;
+ * - quando uma operação falha e o usuário precisa de retorno visual.
+ *
+ * Entrada:
+ * - `message`: texto mostrado ao usuário;
+ * - `type`: "success" por padrão ou "error" para aplicar o estilo de erro.
+ *
+ * Efeito:
+ * Atualiza o elemento #toast, reinicia o temporizador e remove a mensagem
+ * automaticamente após 3,4 segundos. Não grava nada no Firebase.
+ */
 function showToast(message, type = "success") {
     toast.textContent = message;
     toast.className = `toast show${type === "error" ? " error" : ""}`;
@@ -134,11 +227,25 @@ function showToast(message, type = "success") {
     }, 3400);
 }
 
+/**
+ * Atualiza visualmente um <input type="range">.
+ *
+ * O valor real continua pertencendo ao input; esta função altera apenas o
+ * `background` para pintar de vermelho a parte já percorrida. É usada nas
+ * barras de progresso do player e no volume.
+ */
 function updateRange(input, percentage) {
     input.style.background = `linear-gradient( to right, #e50914 0%, #e50914 ${percentage}%, #393939 ${percentage}%, #393939 100%
   )`;
 }
 
+/**
+ * Verifica se o usuário autenticado corresponde à conta administrativa.
+ *
+ * Esta verificação serve para decidir o que a INTERFACE deve mostrar.
+ * Segurança real de gravação/exclusão continua obrigatoriamente nas regras
+ * do Firestore, pois qualquer JavaScript executado no navegador pode ser lido.
+ */
 function isAdminAccount(user = auth.currentUser) {
     return Boolean(user?.email) && user.email.toLowerCase() === ADMIN_EMAIL;
 }
@@ -151,6 +258,14 @@ function isOwner() {
     return canManageCatalog();
 }
 
+/**
+ * Sincroniza a interface com o papel da conta autenticada.
+ *
+ * Quando auth.js detecta login/logout, chama esta função. Ela atualiza
+ * `isAdminUser`, mostra/oculta elementos `.admin-only` e altera a descrição
+ * da conta. Não concede permissões no banco; apenas representa visualmente
+ * as permissões que o Firestore deve validar novamente no servidor.
+ */
 function updateAdminUI(user) {
     isAdminUser = isAdminAccount(user);
 
@@ -172,8 +287,34 @@ function updateAdminUI(user) {
             : "Sua biblioteca e suas playlists ficam vinculadas à sua conta. O catálogo é administrado pelo RedBeat.";
     }
 }
-// ==================== RENDERIZAÇÃO ====================
+// ============================================================================
+// RENDERIZAÇÃO DA HOME, CATÁLOGO E CARDS
+// ============================================================================
+// "Renderizar" aqui significa transformar os dados guardados em JavaScript em
+// HTML visível. Sempre que Firestore, busca, filtros ou player alteram o estado,
+// alguma função desta seção é chamada para sincronizar a tela.
+//
+// As capas são carregadas em uma segunda etapa porque estão guardadas em chunks.
+// Primeiro a linha/card aparece com uma inicial; depois hydrateCover() pede a
+// imagem ao storage.js e substitui o placeholder quando a URL estiver pronta.
+// ============================================================================
 
+/**
+ * Substitui o placeholder de uma capa pela imagem real da faixa.
+ *
+ * Entrada:
+ * - `track`: documento da música contendo ID e informações de armazenamento;
+ * - `container`: região do DOM onde a capa deve ser procurada.
+ *
+ * Processo:
+ * 1. buildAssetUrl(track, "cover") pede a storage.js a capa reconstruída;
+ * 2. storage.js lê os coverChunks, descomprime e cria uma Blob URL;
+ * 3. esta função procura `[data-cover-id="..."]` dentro do container;
+ * 4. a URL vira `background-image` do elemento.
+ *
+ * O carregamento é assíncrono para que a lista apareça rapidamente sem
+ * esperar todas as imagens terminarem de ser reconstruídas.
+ */
 async function hydrateCover(track, container) {
     if (!track) {
         return;
@@ -191,16 +332,43 @@ async function hydrateCover(track, container) {
     }
 }
 
+/**
+ * Dispara a hidratação das capas de todas as faixas de uma lista.
+ *
+ * Não usa `await` em cada hydrateCover propositalmente: cada chamada começa
+ * o próprio carregamento e a interface pode preencher as capas conforme elas
+ * ficam prontas, sem bloquear a renderização das demais músicas.
+ */
 async function hydrateListCovers(list, container) {
     for (const track of list) {
         hydrateCover(track, container);
     }
 }
 
+/**
+ * Compara o gênero salvo na faixa com o gênero do filtro.
+ *
+ * A comparação passa por normalizeSearchValue(), portanto diferenças de
+ * maiúsculas/minúsculas e acentos não quebram o filtro.
+ */
 function genreMatches(track, genre) {
     return normalizeSearchValue(track.genre) === normalizeSearchValue(genre);
 }
 
+// Calcula quais músicas devem aparecer na Home.
+// Primeiro aplica gênero; depois aplica a pesquisa por texto.
+/**
+ * Calcula a lista que deve aparecer no catálogo da Home.
+ *
+ * Ordem das regras:
+ * 1. começa com o catálogo completo `tracks`;
+ * 2. se `activeGenre` estiver definido, mantém apenas aquele gênero;
+ * 3. lê o texto de #searchInput;
+ * 4. compara a busca com título, artista, álbum e gênero;
+ * 5. retorna uma NOVA lista para renderHome().
+ *
+ * Esta função não altera o Firestore nem `tracks`: apenas cria a visão filtrada.
+ */
 function getHomeTracks() {
     const term = normalizeSearchValue(searchInput.value);
     let list = tracks;
@@ -239,6 +407,13 @@ function openGenreSelect() {
     genreSelect?.classList.add("open");
 }
 
+/**
+ * Sincroniza o seletor visual de gênero com o <input/select> real usado no upload.
+ *
+ * A interface usa um menu personalizado para combinar com o tema. Mesmo assim,
+ * o valor definitivo fica em #trackGenre, que é lido quando o formulário é
+ * enviado. Aqui também são atualizados texto, classe visual e `aria-selected`.
+ */
 function setGenreSelectValue(value = "") {
     const safeValue = MUSIC_GENRES.includes(value) ? value : "";
     trackGenreSelect.value = safeValue;
@@ -252,6 +427,13 @@ function setGenreSelectValue(value = "") {
     });
 }
 
+// --------------------------------------------------------------------------
+// EVENTOS DO SELETOR PERSONALIZADO DE GÊNERO
+// --------------------------------------------------------------------------
+// O navegador não permite estilizar de forma consistente todos os <option>.
+// Por isso o RedBeat usa um menu visual próprio. Os listeners abaixo mantêm
+// mouse, teclado, acessibilidade e o valor real do formulário sincronizados.
+// --------------------------------------------------------------------------
 genreSelectButton?.addEventListener("click", () => {
     if (genreSelectMenu.classList.contains("hidden")) {
         openGenreSelect();
@@ -308,6 +490,14 @@ genreSelectMenu?.addEventListener("keydown", (event) => {
     }
 });
 
+// Atualiza o contador de músicas de cada card de gênero e marca o filtro ativo.
+/**
+ * Atualiza os 12 cards de gênero da Home.
+ *
+ * Para cada gênero definido em MUSIC_GENRES, conta quantas faixas do catálogo
+ * pertencem àquela categoria, atualiza o texto "X músicas" e marca visualmente
+ * o card correspondente a `activeGenre`.
+ */
 function renderGenreCards() {
     for (const genre of MUSIC_GENRES) {
         const count = tracks.filter((track) => genreMatches(track, genre)).length;
@@ -324,6 +514,13 @@ function renderGenreCards() {
     clearGenreFilter?.classList.toggle("hidden", !activeGenre);
 }
 
+/**
+ * Ativa ou remove o filtro de gênero da Home.
+ *
+ * Ao escolher um gênero, a busca textual é limpa para evitar dois filtros
+ * concorrentes. Depois renderHome() recalcula visibleTracks e a tela rola
+ * suavemente até o catálogo para mostrar o resultado ao usuário.
+ */
 function setGenreFilter(genre = "") {
     activeGenre = MUSIC_GENRES.includes(genre) ? genre : "";
     searchInput.value = "";
@@ -338,6 +535,20 @@ function setGenreFilter(genre = "") {
     });
 }
 
+/**
+ * Gera o HTML das linhas de música usadas no catálogo e na biblioteca.
+ *
+ * Entrada:
+ * - `list`: array de músicas a mostrar;
+ * - `context`: informa de qual tela a linha veio (home, saved, playlist...).
+ *
+ * Cada linha recebe `data-id` e botões com `data-action`. Mais tarde um único
+ * listener consegue descobrir qual música e qual ação foram clicadas. Isso é
+ * chamado de delegação de eventos e evita criar centenas de listeners.
+ *
+ * escapeHtml() é aplicado em textos vindos do banco para impedir que conteúdo
+ * salvo seja interpretado como HTML executável.
+ */
 function trackRows(list, context = "home") {
     if (!list.length) {
         const message = context === "home"
@@ -382,6 +593,13 @@ function trackRows(list, context = "home") {
         .join("");
 }
 
+/**
+ * Monta a seção "Adicionadas recentemente".
+ *
+ * `tracks` já chega ordenado por data em auth.js. Por isso `slice(0, 5)` pega
+ * somente as cinco primeiras sem limitar o catálogo completo. Depois as capas
+ * são hidratadas de forma assíncrona.
+ */
 function renderRecentTracks() {
     const recentTracks = tracks.slice(0, 5);
     if (!recentTracks.length) {
@@ -402,6 +620,12 @@ function renderRecentTracks() {
     hydrateListCovers(recentTracks, recentGrid);
 }
 
+/**
+ * Atualiza saudação e contadores do painel superior da Home.
+ *
+ * Os números vêm do estado local já sincronizado com Firebase: quantidade de
+ * tracks, tamanho do Set de salvas e quantidade de playlists.
+ */
 function updateHomeDashboard() {
     const user = auth.currentUser;
     const accountName = user?.email?.split("@")[0] || "ouvinte";
@@ -413,6 +637,21 @@ function updateHomeDashboard() {
     $("#homePlaylistTotal").textContent = String(playlists.length);
 }
 
+/**
+ * Render principal da página inicial.
+ *
+ * Esta é uma das funções mais importantes da interface. Ela:
+ * 1. chama getHomeTracks() e atualiza `visibleTracks`;
+ * 2. detecta se há busca ou gênero ativo;
+ * 3. altera título, subtítulo e indicadores da tela;
+ * 4. gera as linhas do catálogo com trackRows();
+ * 5. inicia o carregamento das capas;
+ * 6. atualiza recentes, cards de gênero e dashboard;
+ * 7. sincroniza o índice da faixa atual no player.
+ *
+ * Ela pode ser chamada várias vezes; não duplica dados no banco porque apenas
+ * reconstrói HTML a partir do estado atual.
+ */
 function renderHome() {
     visibleTracks = getHomeTracks();
     const term = searchInput.value.trim();
@@ -455,6 +694,13 @@ function renderHome() {
     syncCurrentIndex();
 }
 
+/**
+ * Redesenha a visão geral da Biblioteca.
+ *
+ * Usa `savedTrackIds` para o contador de músicas salvas e `playlists` para
+ * criar os cards de playlists. Como esses estados vêm de listeners Firestore,
+ * qualquer alteração remota refletida na conta reaparece aqui automaticamente.
+ */
 function renderLibrary() {
     $("#savedCount").textContent = `${savedTrackIds.size} ${savedTrackIds.size === 1 ? "música" : "músicas"}`;
     updateHomeDashboard();
@@ -482,6 +728,13 @@ function renderLibrary() {
     }
 }
 
+/**
+ * Redesenha o conteúdo interno aberto na Biblioteca.
+ *
+ * Dependendo de `libraryMode`, currentLibraryTracks representa músicas salvas
+ * ou itens de uma playlist. A função usa o mesmo gerador trackRows() para
+ * manter o visual consistente entre catálogo e biblioteca.
+ */
 function renderLibraryDetail() {
     let list = [];
     if (libraryMode === "saved") {
@@ -498,6 +751,13 @@ function renderLibraryDetail() {
     hydrateListCovers(list, libraryTrackList);
 }
 
+/**
+ * Atualiza `currentTrack` quando o snapshot do catálogo é renovado.
+ *
+ * Firestore entrega novos objetos a cada snapshot. Se uma faixa que está
+ * tocando teve metadados atualizados, esta função troca a referência antiga
+ * pela versão nova com o mesmo ID. Se a faixa foi apagada, o player é limpo.
+ */
 function refreshCurrentTrack() {
     if (!currentTrack) {
         return;
@@ -509,6 +769,12 @@ function refreshCurrentTrack() {
     updatePlayerUI();
 }
 
+/**
+ * Descobre a posição da faixa atual dentro da lista usada pela Home.
+ *
+ * O índice é necessário para controles que dependem da ordem. Caso a faixa
+ * atual não esteja presente na lista visível, o resultado é -1.
+ */
 function syncCurrentIndex() {
     let list;
     if (activeView === "home") {
@@ -522,8 +788,29 @@ function syncCurrentIndex() {
     }
     currentIndex = list.findIndex((track) => track.id === currentTrack?.id);
 }
-// ==================== BIBLIOTECA E PLAYLISTS ====================
+// ============================================================================
+// BIBLIOTECA, MÚSICAS SALVAS E PLAYLISTS
+// ============================================================================
+// Esta seção grava preferências pessoais dentro de users/{uid}.
+// O catálogo é global, porém "salvar música" e playlists pertencem à conta.
+// Isso permite entrar em outro dispositivo e recuperar a mesma biblioteca.
+//
+// Estrutura usada no Firestore:
+// users/{uid}/savedTracks/{trackId}
+// users/{uid}/playlists/{playlistId}
+// users/{uid}/playlists/{playlistId}/items/{trackId}
+// ============================================================================
+// Lê o estado sincronizado da conta e monta "Músicas salvas" e playlists.
+// As gravações são feitas em users/{uid}/... no Firestore.
 
+/**
+ * Adiciona ou remove uma faixa das músicas salvas da conta atual.
+ *
+ * A função consulta o Set local apenas para decidir a operação. A gravação real
+ * acontece em users/{uid}/savedTracks/{trackId}. Não alteramos manualmente o
+ * Set depois: o listener em auth.js recebe a mudança do Firestore e atualiza a
+ * interface, mantendo uma única fonte de sincronização.
+ */
 async function toggleSaved(track) {
     const user = auth.currentUser;
     if (!user) {
@@ -540,6 +827,12 @@ async function toggleSaved(track) {
     }
 }
 
+/**
+ * Cria uma nova playlist para o usuário autenticado.
+ *
+ * Gera um documento dentro de users/{uid}/playlists e grava nome/data.
+ * O card aparece quando o listener de playlists em auth.js recebe o snapshot.
+ */
 async function createPlaylist(name) {
     const user = auth.currentUser;
     if (!user) {
@@ -552,6 +845,13 @@ async function createPlaylist(name) {
     return playlistRef.id;
 }
 
+/**
+ * Remove uma playlist e seus itens.
+ *
+ * Primeiro exclui os documentos da subcoleção `items`; depois exclui o
+ * documento principal. Isso é necessário porque excluir um documento pai no
+ * Firestore não apaga automaticamente suas subcoleções.
+ */
 async function deletePlaylist(id) {
     const user = auth.currentUser;
     if (!user) {
@@ -573,6 +873,12 @@ async function deletePlaylist(id) {
     }
 }
 
+/**
+ * Vincula uma faixa existente a uma playlist do usuário.
+ *
+ * A música não é duplicada: o item guarda referência/identificação da faixa.
+ * Assim o catálogo global continua sendo a origem dos metadados e do áudio.
+ */
 async function addToPlaylist(track, playlist) {
     const user = auth.currentUser;
     if (!user) {
@@ -587,6 +893,12 @@ async function addToPlaylist(track, playlist) {
     }
 }
 
+/**
+ * Carrega os IDs dos itens de uma playlist e converte em objetos de `tracks`.
+ *
+ * O resultado é salvo em currentLibraryTracks e usado por renderLibraryDetail().
+ * Se uma faixa já não existir no catálogo global, ela é descartada da lista.
+ */
 async function loadPlaylist(playlist) {
     const user = auth.currentUser;
     if (!user) {
@@ -603,8 +915,26 @@ function renderSuggestions() {
     // Renderização administrada em auth.js
 }
 
-// ==================== NAVEGAÇÃO ====================
+// ============================================================================
+// NAVEGAÇÃO INTERNA E BUSCA
+// ============================================================================
+// O RedBeat funciona como uma aplicação de página única: Home, Biblioteca e
+// Sugestões já existem no mesmo index.html. Navegar significa ocultar uma
+// seção e exibir outra, sem carregar uma nova página do servidor.
+//
+// O botão Voltar interno não usa o histórico do navegador para todos os casos;
+// ele interpreta o estado atual (busca, gênero, detalhe da biblioteca etc.) e
+// decide qual nível deve ser fechado primeiro.
+// ============================================================================
+// Controla qual seção do SPA está visível sem recarregar a página.
+// O botão voltar também usa esse estado para decidir o destino.
 
+/**
+ * Informa se o botão Voltar interno tem algum nível para desfazer.
+ *
+ * Exemplos: fechar pesquisa, remover filtro de gênero, sair do detalhe de uma
+ * playlist ou retornar de Biblioteca/Sugestões para Home.
+ */
 function canGoBackInsideApp() {
     if (activeView === "library") {
         return true;
@@ -615,6 +945,10 @@ function canGoBackInsideApp() {
     return false;
 }
 
+/**
+ * Habilita/desabilita visualmente o botão Voltar conforme canGoBackInsideApp().
+ * Também atualiza atributos de acessibilidade para representar o mesmo estado.
+ */
 function updateAppBackButton() {
     const canGoBack = canGoBackInsideApp();
     appBackButton.disabled = !canGoBack;
@@ -638,6 +972,13 @@ function updateAppBackButton() {
     appBackButton.setAttribute("aria-label", "Voltar dentro do aplicativo");
 }
 
+/**
+ * Implementa a prioridade do botão Voltar do próprio RedBeat.
+ *
+ * A função fecha primeiro o contexto mais específico (detalhe, busca ou filtro)
+ * e só depois muda de seção. Isso evita enviar o usuário diretamente à Home
+ * quando ele apenas queria sair de uma playlist ou limpar uma pesquisa.
+ */
 function goBackInsideApp() {
     if (activeView === "library" && libraryMode !== "overview") {
         showLibraryOverview();
@@ -655,6 +996,13 @@ function goBackInsideApp() {
     }
 }
 
+/**
+ * Troca a seção principal visível da aplicação.
+ *
+ * Em vez de navegar para outra URL, adiciona/remove `.hidden` das seções e
+ * atualiza o botão ativo do menu. Também garante que estados específicos da
+ * Home/Biblioteca sejam recalculados quando necessário.
+ */
 function setView(view) {
     activeView = view;
     $("#homeView").classList.toggle("hidden", view !== "home");
@@ -693,6 +1041,13 @@ function showLibraryDetail() {
     renderLibraryDetail();
     updateAppBackButton();
 }
+// --------------------------------------------------------------------------
+// EVENTOS DE NAVEGAÇÃO, BUSCA E CARDS DA HOME
+// --------------------------------------------------------------------------
+// A partir daqui os elementos da interface são conectados às funções acima.
+// O listener não contém a lógica inteira: normalmente ele apenas interpreta o
+// clique/tecla e chama a função responsável, mantendo o código organizado.
+// --------------------------------------------------------------------------
 $("#showHome").addEventListener("click", () => {
     activeGenre = "";
     searchInput.value = "";
@@ -838,8 +1193,22 @@ $("#playlistGrid").addEventListener("click", async (event) => {
         await loadPlaylist(playlist);
     }
 });
-// ==================== AÇÕES DAS MÚSICAS ====================
+// ============================================================================
+// AÇÕES DAS MÚSICAS E FORMULÁRIOS
+// ============================================================================
+// Esta seção centraliza interações como abrir o menu de uma faixa, adicionar
+// a playlists, abrir o formulário administrativo e preparar arquivos para upload.
+// Os listeners usam `data-action` e `data-id` para descobrir qual ação ocorreu
+// sem precisar criar um event listener separado para cada música renderizada.
+// ============================================================================
+// Aqui ficam upload, exclusão, salvar/desfavoritar, sugestões e menu das faixas.
 
+/**
+ * Abre o modal de ações para uma faixa específica.
+ *
+ * Guarda a faixa em `selectedActionTrack`, preenche os dados do modal e ajusta
+ * quais ações aparecem conforme conta, contexto e permissão administrativa.
+ */
 function openTrackActions(track) {
     selectedActionTrack = track;
     $("#actionTrackTitle").textContent = track.title;
@@ -883,6 +1252,18 @@ $("#actionDeleteTrack").addEventListener("click", async () => {
     }
 });
 
+/**
+ * Listener compartilhado para cliques nas listas de músicas.
+ *
+ * Ele usa delegação de eventos:
+ * 1. encontra a `.track-row` mais próxima do clique;
+ * 2. recupera `data-id` para achar a música no estado;
+ * 3. lê `data-action` do botão pressionado;
+ * 4. encaminha para playTrack(), toggleSaved() ou openTrackActions().
+ *
+ * Assim novas linhas criadas por renderizações já funcionam sem registrar
+ * listeners adicionais.
+ */
 function listClickHandler(event) {
     const row = event.target.closest(".track-row");
     if (!row) {
@@ -988,6 +1369,44 @@ dropzone.addEventListener("drop", (event) => {
     audioFile.files = dataTransfer.files;
     audioFile.dispatchEvent(new Event("change"));
 });
+// ============================================================================
+// UPLOAD DE MÚSICA — FLUXO COMPLETO
+// ============================================================================
+// Somente a conta administradora chega ao fluxo abaixo pela interface. Além
+// disso, as regras do Firestore precisam autorizar as gravações: esconder o
+// botão no navegador, sozinho, nunca seria uma proteção suficiente.
+//
+// Quando o formulário é enviado:
+// 1. Confere usuário e permissão administrativa.
+// 2. Lê áudio, capa e metadados digitados no formulário.
+// 3. Valida gênero e tamanho máximo dos arquivos.
+// 4. Lê a duração do áudio em media.js.
+// 5. Otimiza a capa para WebP e comprime capa/áudio com GZIP.
+// 6. Cria tracks/{id} com status "uploading". A consulta do catálogo ignora
+//    esse status, então uma faixa incompleta não aparece aos usuários.
+// 7. storage.js divide os bytes comprimidos e grava audioChunks/coverChunks.
+// 8. verifyStoredTrackBytes() baixa os chunks novamente e compara byte a byte.
+// 9. Se estiver íntegro, o documento vira status "ready".
+// 10. Se algo falhar, o catch tenta apagar chunks e documento principal para
+//     evitar deixar uma música parcialmente gravada no banco.
+// ============================================================================
+// Fluxo completo:
+// 1. valida admin e formulário;
+// 2. otimiza a capa;
+// 3. comprime capa e áudio com GZIP;
+// 4. cria o documento principal da faixa com status "uploading";
+// 5. divide os arquivos e grava chunks;
+// 6. lê os chunks novamente e verifica integridade;
+// 7. muda status para "ready" para a música aparecer no catálogo.
+// Se qualquer etapa falhar, o código tenta remover os dados parciais.
+/**
+ * EVENTO DE ENVIO DO FORMULÁRIO DE UPLOAD.
+ *
+ * O listener abaixo implementa na prática o fluxo de 10 etapas descrito no
+ * cabeçalho desta seção. É `async` porque compressão, Firestore e verificação
+ * de integridade são operações assíncronas que precisam ser aguardadas antes
+ * de liberar o botão ou informar sucesso.
+ */
 uploadForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     const user = auth.currentUser;
@@ -1120,6 +1539,19 @@ uploadForm.addEventListener("submit", async (event) => {
     }
 });
 
+/**
+ * Exclui uma música do catálogo global (admin).
+ *
+ * Processo:
+ * 1. confirma permissão e pede confirmação ao usuário;
+ * 2. remove audioChunks e coverChunks;
+ * 3. exclui o documento tracks/{id};
+ * 4. remove Blob URLs em cache daquela faixa;
+ * 5. caso ela estivesse tocando, limpa/avança o estado do player.
+ *
+ * As regras do Firestore precisam autorizar cada exclusão; esta checagem no
+ * JavaScript serve apenas para fluxo de interface.
+ */
 async function deleteTrack(track) {
     if (!canManageCatalog()) {
         showToast("Somente o administrador pode excluir músicas.", "error");
@@ -1231,16 +1663,48 @@ suggestionList.addEventListener("click", async (event) => {
     }
 });
 
-// ==================== PLAYER E TELA CHEIA ====================
+// ============================================================================
+// PLAYER, TELA CHEIA E RECUPERAÇÃO DE REPRODUÇÃO
+// ============================================================================
+// O elemento real que toca música é <audio id="audio"> do index.html.
+// Este JavaScript controla qual fonte é entregue a ele e mantém a interface
+// sincronizada com os eventos nativos do navegador (`play`, `pause`,
+// `timeupdate`, `ended`, `waiting`, `stalled` e `error`).
+//
+// Fluxo para tocar uma música:
+// usuário clica -> playTrack(track) -> storage.buildAssetUrl(track, "audio")
+// -> chunks são lidos e unidos -> GZIP é desfeito -> Blob URL é criada
+// -> `audio.src = url` -> `audio.play()`.
+//
+// A rotina de "playback health" observa travamentos. Se o tempo parar de
+// avançar enquanto ainda existe música restante, o código invalida a URL em
+// cache, reconstrói o áudio e tenta retomar aproximadamente no mesmo segundo.
+// Isso reduz falhas causadas por Blob URL inválida ou leitura interrompida.
+// ============================================================================
+// O <audio> do HTML é o motor real de reprodução.
+// O JavaScript apenas troca a fonte, controla tempo/volume e sincroniza a UI.
+// buildAssetUrl() reconstrói o áudio armazenado em chunks antes de tocar.
 
 let playbackHealthTimer = null;
 const playbackRecoveryAttempts = new Map();
 
+/**
+ * Cancela o temporizador usado para detectar travamento do áudio.
+ *
+ * É chamado ao pausar, trocar de música ou iniciar uma nova verificação para
+ * garantir que exista no máximo um teste de saúde pendente.
+ */
 function clearPlaybackHealthTimer() {
     clearTimeout(playbackHealthTimer);
     playbackHealthTimer = null;
 }
 
+/**
+ * Reinicia o estado de recuperação automática de uma faixa.
+ *
+ * Remove a contagem de tentativas para o ID informado e cancela qualquer
+ * verificação agendada. Uma reprodução que voltou ao normal começa "limpa".
+ */
 function resetPlaybackRecovery(trackId = currentTrack?.id) {
     if (trackId) {
         playbackRecoveryAttempts.delete(trackId);
@@ -1249,6 +1713,13 @@ function resetPlaybackRecovery(trackId = currentTrack?.id) {
     clearPlaybackHealthTimer();
 }
 
+/**
+ * Agenda uma verificação para saber se o áudio realmente avançou.
+ *
+ * Guarda o `currentTime`, espera alguns milissegundos e compara novamente.
+ * Se o player deveria estar tocando, ainda há tempo restante e a posição não
+ * avançou, considera a reprodução travada e chama recoverCurrentTrackPlayback().
+ */
 function schedulePlaybackHealthCheck(delay = 1600) {
     clearPlaybackHealthTimer();
 
@@ -1275,6 +1746,18 @@ function schedulePlaybackHealthCheck(delay = 1600) {
     }, delay);
 }
 
+/**
+ * Tenta reconstruir e retomar uma faixa que travou durante a reprodução.
+ *
+ * Estratégia:
+ * 1. limita o número de recuperações por faixa para evitar loop infinito;
+ * 2. memoriza o segundo atual e se o áudio deveria continuar tocando;
+ * 3. revoga a Blob URL antiga no cache;
+ * 4. pede a storage.js uma nova reconstrução do áudio;
+ * 5. espera os metadados do novo source;
+ * 6. reposiciona aproximadamente no mesmo instante;
+ * 7. volta a reproduzir se a faixa estava em execução.
+ */
 async function recoverCurrentTrackPlayback(reason = "error") {
     if (!currentTrack) {
         return;
@@ -1339,6 +1822,13 @@ function isNowPlayingScreenOpen() {
     return nowPlayingScreen.classList.contains("is-open");
 }
 
+/**
+ * Torna uma faixa a seleção atual e atualiza a interface.
+ *
+ * Se a tela cheia estiver aberta e a música mudar, aplica classes de animação
+ * de saída/entrada. A função seleciona a faixa; quem realmente inicia o áudio
+ * é playTrack().
+ */
 async function selectCurrentTrack(track) {
     const changingTrack = Boolean(currentTrack &&
         currentTrack.id !== track.id);
@@ -1366,6 +1856,25 @@ async function selectCurrentTrack(track) {
     }
 }
 
+// Seleciona uma faixa, reconstrói/obtém sua URL de áudio e inicia reprodução.
+// `playbackRequestId` impede uma requisição antiga de substituir uma nova
+// caso o usuário clique rapidamente em várias músicas.
+/**
+ * Carrega e inicia a reprodução de uma faixa.
+ *
+ * Fluxo detalhado:
+ * 1. incrementa `playbackRequestId` para identificar esta tentativa;
+ * 2. chama selectCurrentTrack() para atualizar o estado visual;
+ * 3. usa URL externa quando disponível ou buildAssetUrl() para reconstruir os
+ *    chunks do Firestore;
+ * 4. antes de tocar, confirma que nenhuma outra música foi escolhida enquanto
+ *    o download/reconstrução estava acontecendo;
+ * 5. atribui `audio.src`, chama load() e depois play();
+ * 6. atualiza Media Session para controles do sistema operacional.
+ *
+ * O requestId evita uma condição de corrida: uma faixa lenta não pode começar
+ * a tocar depois que o usuário já clicou em outra.
+ */
 async function playTrack(track) {
     const requestId = ++playbackRequestId;
     await selectCurrentTrack(track);
@@ -1389,6 +1898,15 @@ async function playTrack(track) {
     }
 }
 
+// Integra o player aos controles de mídia do sistema operacional/lock screen
+// quando o navegador oferece a Media Session API.
+/**
+ * Envia metadados da música para a Media Session API quando disponível.
+ *
+ * Isso permite que título, artista, álbum e capa apareçam em controles de mídia
+ * do sistema, tela bloqueada e alguns dispositivos Bluetooth. O recurso depende
+ * do navegador/sistema; se não existir, o player normal continua funcionando.
+ */
 async function updateMediaSession(track) {
     if (!("mediaSession" in navigator)) {
         return;
@@ -1408,6 +1926,12 @@ async function updateMediaSession(track) {
     });
 }
 
+/**
+ * Retorna a fila que os botões Anterior/Próxima devem utilizar.
+ *
+ * A fila depende do contexto atual: catálogo, músicas salvas ou playlist.
+ * Dessa forma "Próxima" dentro de uma playlist continua na própria playlist.
+ */
 function currentPlaybackList() {
     if (activeView === "home") {
         if (searchInput.value.trim()) {
@@ -1425,6 +1949,12 @@ function currentPlaybackList() {
     return tracks;
 }
 
+/**
+ * Alterna entre tocar e pausar.
+ *
+ * Se nenhuma faixa foi selecionada ainda, escolhe a primeira da fila atual.
+ * Caso já exista currentTrack, delega a ação ao elemento <audio> nativo.
+ */
 function togglePlayback() {
     if (!currentTrack) {
         const first = currentPlaybackList()[0];
@@ -1441,6 +1971,13 @@ function togglePlayback() {
     }
 }
 
+// Próxima faixa: respeita a lista atualmente visível e o modo aleatório.
+/**
+ * Escolhe a próxima faixa da fila atual.
+ *
+ * Com shuffle ativo, sorteia outra música evitando repetir a mesma quando há
+ * mais de uma opção. Sem shuffle, avança circularmente e volta ao início no fim.
+ */
 function nextTrack() {
     const list = currentPlaybackList();
     if (!list.length) {
@@ -1460,6 +1997,10 @@ function nextTrack() {
     playTrack(list[index]);
 }
 
+/**
+ * Escolhe a faixa anterior da fila atual, também de forma circular.
+ * Se estiver na primeira posição, volta para a última.
+ */
 function prevTrack() {
     const list = currentPlaybackList();
     if (!list.length) {
@@ -1489,6 +2030,13 @@ function setPlayState(button, isPlaying) {
     button.setAttribute("aria-label", isPlaying ? "Pausar" : "Reproduzir");
 }
 
+/**
+ * Atualiza capa e fundo desfocado da tela cheia.
+ *
+ * Primeiro tenta usar a URL de capa já existente em cache. Caso não exista,
+ * mostra uma inicial temporária e solicita buildAssetUrl(); quando a Promise
+ * termina, confirma que a mesma faixa continua selecionada antes de aplicar.
+ */
 function setFullscreenCover(track) {
     if (!track) {
         fullscreenBackdrop.style.backgroundImage = "";
@@ -1517,6 +2065,10 @@ function setFullscreenCover(track) {
         .catch(console.warn);
 }
 
+/**
+ * Sincroniza todos os textos/controles da tela "Tocando agora" com currentTrack.
+ * Também atualiza estado de curtida, botão play/pause e capa em tela cheia.
+ */
 function updateFullscreenUI() {
     if (!currentTrack) {
         fullscreenTitle.textContent = "Nenhuma música";
@@ -1541,6 +2093,12 @@ function updateFullscreenUI() {
     setFullscreenCover(currentTrack);
 }
 
+/**
+ * Abre a experiência de reprodução em tela cheia.
+ *
+ * Ela só é aberta quando existe uma faixa e o áudio está efetivamente tocando.
+ * Classes CSS e `aria-hidden` controlam animação e acessibilidade.
+ */
 function openNowPlayingScreen() {
     if (!currentTrack || audio.paused) {
         return;
@@ -1555,6 +2113,12 @@ function openNowPlayingScreen() {
     });
 }
 
+/**
+ * Fecha a tela cheia com animação.
+ *
+ * Primeiro remove a classe visual; depois de 350 ms adiciona `.hidden`, tempo
+ * suficiente para a transição CSS terminar sem cortar a animação.
+ */
 function closeNowPlayingScreen() {
     if (nowPlayingScreen.classList.contains("hidden")) {
         return;
@@ -1568,6 +2132,12 @@ function closeNowPlayingScreen() {
     }, 350);
 }
 
+/**
+ * Mantém o player inferior e a tela cheia sincronizados com o estado do áudio.
+ *
+ * Atualiza título, artista, coração, botão play/pause, capa e possibilidade de
+ * abrir a tela cheia. A capa usa cache quando possível para evitar novas leituras.
+ */
 function updatePlayerUI() {
     const canOpenFullscreen = Boolean(currentTrack &&
         !audio.paused);
@@ -1609,6 +2179,13 @@ function updatePlayerUI() {
     })
         .catch(console.warn);
 }
+// --------------------------------------------------------------------------
+// EVENTOS DO PLAYER
+// --------------------------------------------------------------------------
+// Estes listeners traduzem ações do usuário e eventos nativos do <audio> em
+// mudanças de estado/interface. Observe que `play`/`pause` podem acontecer não
+// só por clique no site, mas também por controles do sistema/Media Session.
+// --------------------------------------------------------------------------
 playBtn.addEventListener("click", togglePlayback);
 $("#nextBtn").addEventListener("click", nextTrack);
 $("#prevBtn").addEventListener("click", prevTrack);
@@ -1683,6 +2260,8 @@ audio.addEventListener("loadedmetadata", () => {
     duration.textContent = formattedDuration;
     fullscreenDuration.textContent = formattedDuration;
 });
+// Executado continuamente durante a reprodução.
+// Atualiza relógio, barras de progresso e posição exibida pelo sistema.
 audio.addEventListener("timeupdate", () => {
     schedulePlaybackHealthCheck();
     currentTime.textContent = formatTime(audio.currentTime);
@@ -1768,6 +2347,21 @@ document
     });
 });
 
+// ============================================================================
+// INICIALIZAÇÃO FINAL DOS MÓDULOS
+// ============================================================================
+// Todo o código acima apenas DEFINE funções e registra listeners. Nesta parte
+// conectamos os módulos que precisam começar a trabalhar quando a página abre.
+//
+// initAuth(): recebe referências/callbacks em vez de importar app.js. Isso
+// evita dependência circular. Quando o Firestore muda, auth.js chama setters
+// recebidos abaixo e o app.js continua sendo dono do estado visual.
+//
+// initScrollbar(): conecta a barra visual personalizada ao container rolável.
+//
+// initPWA(): registra o Service Worker e usa o botão #installAppBtn quando o
+// navegador liberar o evento de instalação.
+// ============================================================================
 initAuth({
     auth,
     db,
@@ -1827,10 +2421,12 @@ initAuth({
     },
 });
 
+// Ativa a scrollbar personalizada.
 initScrollbar({
     $,
 });
 
+// Registra a PWA e conecta o botão de instalação.
 initPWA({
     installButton: $("#installAppBtn"),
     onInstalled: () => showToast("RedBeat instalado no dispositivo."),
@@ -1839,6 +2435,9 @@ initPWA({
 
 setGenreSelectValue(trackGenreSelect?.value || "");
 
+// Antes de a aba ser descarregada, todas as Blob URLs criadas com
+// URL.createObjectURL() são revogadas. Isso libera memória que o navegador
+// reservou para áudio/capas temporários durante a sessão.
 window.addEventListener("beforeunload", () => {
     revokeAllAssetUrls();
     if (localCoverPreviewUrl) {

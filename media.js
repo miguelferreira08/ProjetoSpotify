@@ -1,3 +1,24 @@
+// ============================================================================
+// MEDIA.JS — PREPARAÇÃO E COMPRESSÃO DE ÁUDIO/CAPA
+// ============================================================================
+//
+// Este módulo trabalha com arquivos locais escolhidos no navegador ANTES de
+// eles serem gravados no Firestore, e também com os bytes lidos DEPOIS.
+//
+// FLUXO NO UPLOAD
+// arquivo de áudio -> readAudioDuration() -> gzipBlob() -> storage.js
+// capa escolhida   -> optimizeCover() -> gzipBlob() -> storage.js
+//
+// FLUXO NA LEITURA
+// storage.js une chunks comprimidos -> gunzipBytes() -> Blob original -> player
+//
+// CompressionStream/DecompressionStream são APIs nativas modernas. Quando não
+// existem, o módulo importa Pako sob demanda, evitando baixar a biblioteca em
+// navegadores que já possuem suporte nativo.
+// ============================================================================
+
+// Cria temporariamente um elemento <audio> somente para ler os metadados
+// do arquivo escolhido e descobrir sua duração em segundos.
 export function readAudioDuration(file) {
     return new Promise((resolve, reject) => {
         const audioElement = document.createElement("audio");
@@ -30,6 +51,13 @@ export function readAudioDuration(file) {
     });
 }
 
+/**
+ * Comprime qualquer Blob com GZIP e retorna Uint8Array.
+ *
+ * O RedBeat guarda bytes no Firestore. Por isso o Blob precisa virar um array
+ * binário. CompressionStream processa os dados como stream sem uma dependência
+ * externa; Pako é usado apenas como fallback de compatibilidade.
+ */
 export async function gzipBlob(blob) {
     if ("CompressionStream" in globalThis) {
         const stream = blob
@@ -43,6 +71,13 @@ export async function gzipBlob(blob) {
     return gzip(new Uint8Array(await blob.arrayBuffer()));
 }
 
+/**
+ * Descomprime bytes GZIP lidos do Firestore.
+ *
+ * Entrada: Uint8Array comprimido.
+ * Saída: Uint8Array com o conteúdo original que poderá formar um Blob de áudio
+ * ou imagem. A estratégia nativa/Pako acompanha gzipBlob().
+ */
 export async function gunzipBytes(bytes) {
     if ("DecompressionStream" in globalThis) {
         const stream = new Blob([bytes])
@@ -56,6 +91,18 @@ export async function gunzipBytes(bytes) {
     return ungzip(bytes);
 }
 
+/**
+ * Otimiza a imagem de capa antes do armazenamento.
+ *
+ * Processo:
+ * 1. decodifica o arquivo com createImageBitmap() quando disponível;
+ * 2. calcula um fator que nunca amplia a imagem e limita o maior lado a 720 px;
+ * 3. desenha a imagem em um canvas com suavização de alta qualidade;
+ * 4. exporta WebP com qualidade 0.78;
+ * 5. libera Bitmap/Object URL temporários no `finally`.
+ *
+ * Isso reduz custo de armazenamento/leitura e também acelera a exibição de capas.
+ */
 export async function optimizeCover(file) {
     let source = null;
     let cleanup = () => {};

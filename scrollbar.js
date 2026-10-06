@@ -1,3 +1,25 @@
+// ============================================================================
+// SCROLLBAR.JS — BARRA DE ROLAGEM VISUAL PERSONALIZADA
+// ============================================================================
+//
+// O conteúdo real rola em #pageScrollContainer. A barra vermelha exibida na
+// lateral não é a scrollbar nativa: ela apenas REPRESENTA e CONTROLA o mesmo
+// scrollTop do container.
+//
+// Fluxo de sincronização:
+// container scroll -> calcula proporção -> move thumb visual.
+// arrastar thumb    -> calcula proporção inversa -> altera container.scrollTop.
+// ResizeObserver    -> recalcula tamanhos quando conteúdo/login/app muda.
+//
+// A scrollbar aparece somente quando scrollHeight > clientHeight e ganha uma
+// classe temporária de atividade durante rolagem/arrasto.
+// ============================================================================
+
+/**
+ * Inicializa a scrollbar customizada e registra todos os listeners necessários.
+ * Recebe apenas `$` para localizar elementos, mantendo o módulo desacoplado do
+ * restante do estado do RedBeat.
+ */
 export function initScrollbar(ctx) {
     const { $ } = ctx;
 
@@ -12,6 +34,11 @@ export function initScrollbar(ctx) {
     let siteScrollDragStartY = 0;
     let siteScrollDragStartTop = 0;
 
+    /**
+     * Mede altura total, viewport, limite máximo e posição atual do container.
+     * Esses quatro valores formam a base matemática para converter scrollTop
+     * em posição do thumb e vice-versa.
+     */
     function getPageScrollMetrics() {
         if (!pageScrollContainer) {
             return {
@@ -34,6 +61,13 @@ export function initScrollbar(ctx) {
         };
     }
 
+    /**
+     * Recalcula tamanho e posição do thumb.
+     *
+     * O tamanho é proporcional à fração visível da página, com mínimo de 52 px
+     * para continuar fácil de clicar. A posição usa a mesma proporção existente
+     * entre scrollTop/maxScroll e thumbTop/maxThumbTop.
+     */
     function updateSiteScrollbar() {
         siteScrollRaf = 0;
 
@@ -63,6 +97,11 @@ export function initScrollbar(ctx) {
         siteScrollThumb.style.transform = `translate3d(0,${thumbTop}px,0)`;
     }
 
+    /**
+     * Agenda atualização para o próximo frame com requestAnimationFrame().
+     * Isso agrupa muitos eventos de scroll rápidos e evita recalcular layout
+     * dezenas de vezes dentro do mesmo frame de pintura.
+     */
     function requestSiteScrollbarUpdate() {
         if (siteScrollRaf) {
             return;
@@ -71,6 +110,10 @@ export function initScrollbar(ctx) {
         siteScrollRaf = requestAnimationFrame(updateSiteScrollbar);
     }
 
+    /**
+     * Torna a barra visível/ativa temporariamente e inicia temporizador de repouso.
+     * Durante arrasto ela permanece ativa mesmo após o timer.
+     */
     function wakeSiteScrollbar() {
         if (!siteScrollbar) {
             return;
@@ -86,6 +129,10 @@ export function initScrollbar(ctx) {
         }, 850);
     }
 
+    /**
+     * Converte uma coordenada vertical do thumb em scrollTop do conteúdo.
+     * Limita a posição ao trilho, calcula a proporção e chama scrollTo().
+     */
     function scrollFromThumbTop(thumbTop) {
         if (!pageScrollContainer) {
             return;
@@ -123,6 +170,8 @@ export function initScrollbar(ctx) {
         });
     }
 
+    // Clique diretamente no trilho: centraliza o thumb perto do ponto clicado
+    // e converte essa nova posição em rolagem da página.
     siteScrollbarTrack?.addEventListener("pointerdown", (event) => {
         if (event.target.closest(".site-scrollbar-thumb")) {
             return;
@@ -136,6 +185,8 @@ export function initScrollbar(ctx) {
         wakeSiteScrollbar();
     });
 
+    // Início do arrasto: guarda Y inicial e posição atual do thumb. Pointer
+    // capture permite continuar recebendo movimento mesmo se o cursor sair dele.
     siteScrollThumb?.addEventListener("pointerdown", (event) => {
         if (event.button !== 0 && event.pointerType === "mouse") {
             return;
@@ -161,6 +212,7 @@ export function initScrollbar(ctx) {
         scrollFromThumbTop(siteScrollDragStartTop + deltaY);
     });
 
+    /** Finaliza o arrasto, libera pointer capture e volta ao modo de repouso. */
     function finishSiteScrollDrag(event) {
         if (!siteScrollDragging) {
             return;

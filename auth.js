@@ -15,6 +15,44 @@ import {
     where,
 } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js";
 
+// ============================================================================
+// AUTH.JS — AUTENTICAÇÃO E SINCRONIZAÇÃO EM TEMPO REAL
+// ============================================================================
+//
+// RESPONSABILIDADES DESTE MÓDULO
+// ------------------------------
+// 1. Alternar a tela de entrada entre login e cadastro.
+// 2. Executar login/cadastro/logout pelo Firebase Authentication.
+// 3. Observar permanentemente mudanças de sessão com onAuthStateChanged().
+// 4. Criar/atualizar users/{uid} para a conta autenticada.
+// 5. Abrir listeners onSnapshot() para catálogo, salvas e playlists.
+// 6. Se a conta for admin, abrir também o listener de sugestões.
+// 7. Entregar os dados recebidos ao app.js através de callbacks/setters.
+//
+// POR QUE initAuth(ctx) RECEBE TANTAS REFERÊNCIAS?
+// -----------------------------------------------
+// auth.js precisa atualizar partes da interface e do estado principal, mas não
+// importa app.js. Se ambos se importassem mutuamente, teríamos uma dependência
+// circular difícil de manter. Por isso app.js injeta elementos e funções no
+// objeto `ctx`; auth.js usa essas dependências sem conhecer a implementação.
+//
+// FLUXO DE LOGIN
+// --------------
+// formulário -> signInWithEmailAndPassword() -> Firebase valida credenciais
+// -> onAuthStateChanged() recebe o usuário -> interface é liberada ->
+// subscribeAccountData() inicia sincronização em tempo real.
+// ============================================================================
+
+/**
+ * Inicializa todo o subsistema de autenticação.
+ *
+ * Entrada:
+ * `ctx` contém conexões Firebase, elementos do DOM, helpers e callbacks do app.
+ *
+ * Saída:
+ * Não retorna os dados da conta. Em vez disso, registra listeners que permanecem
+ * ativos durante a sessão e chamam callbacks sempre que algo muda.
+ */
 export function initAuth(ctx) {
     const {
         auth,
@@ -67,6 +105,13 @@ export function initAuth(ctx) {
     let unsubscribeSuggestions = null;
     let suggestions = [];
 
+    /**
+     * Converte códigos técnicos do Firebase Auth em mensagens amigáveis.
+     *
+     * O Firebase retorna erros como `auth/invalid-credential`. Exibir o código
+     * puro não ajuda a maioria dos usuários, então esta função mapeia os casos
+     * conhecidos e mantém um fallback com o código original para diagnóstico.
+     */
     function friendlyAuthError(code = "") {
         const messages = {
             "auth/invalid-credential": "E-mail ou senha inválidos.",
@@ -83,6 +128,13 @@ export function initAuth(ctx) {
         return messages[code] || `Não foi possível autenticar (${code || "erro"}).`;
     }
 
+    /**
+     * Alterna o mesmo formulário entre modo login e modo cadastro.
+     *
+     * Além do texto do botão/título, troca o `autocomplete` da senha para que
+     * o gerenciador de senhas do navegador saiba se está preenchendo uma senha
+     * existente (`current-password`) ou criando uma nova (`new-password`).
+     */
     function setGateMode(mode) {
         authMode = mode;
         const login = mode === "login";
@@ -96,6 +148,14 @@ export function initAuth(ctx) {
         $("#gateError").classList.add("hidden");
     }
 
+    /**
+     * Garante a existência de users/{uid} para a conta autenticada.
+     *
+     * O Authentication guarda credenciais; o Firestore guarda dados do app.
+     * Este documento funciona como raiz para savedTracks e playlists.
+     * `merge: true` é importante porque atualiza e-mail/data sem apagar outros
+     * campos que possam ser adicionados ao perfil no futuro.
+     */
     async function ensureUserProfile(user) {
         await setDoc(doc(db, "users", user.uid), {
             email: user.email || "",
@@ -103,6 +163,14 @@ export function initAuth(ctx) {
         }, { merge: true });
     }
 
+    /**
+     * Encerra todos os listeners Firestore da sessão anterior.
+     *
+     * onSnapshot() retorna uma função de cancelamento. Guardamos essas funções
+     * em `unsubscribe...` e chamamos todas antes de iniciar uma nova sessão.
+     * Isso impede leituras duplicadas, atualizações repetidas e vazamento de
+     * dados de uma conta para a interface de outra após logout/login.
+     */
     function stopSubscriptions() {
         unsubscribeTracks?.();
         unsubscribeSaved?.();
@@ -114,6 +182,10 @@ export function initAuth(ctx) {
         unsubscribeSuggestions = null;
     }
 
+    /**
+     * Converte um Timestamp do Firestore para data/hora pt-BR.
+     * Se o servidor ainda não tiver resolvido serverTimestamp(), usa "agora".
+     */
     function formatSuggestionDate(timestamp) {
         if (!timestamp?.toDate) {
             return "agora";
@@ -128,6 +200,19 @@ export function initAuth(ctx) {
         }).format(timestamp.toDate());
     }
 
+    /**
+     * Renderiza a área de sugestões conforme o papel da conta.
+     *
+     * Usuário comum:
+     * - recebe apenas seu e-mail preenchido no formulário;
+     * - não recebe a lista global de sugestões.
+     *
+     * Administrador:
+     * - vê badge, quantidade e todos os cards já carregados em `suggestions`.
+     *
+     * A restrição de leitura também precisa existir nas Firestore Rules; esta
+     * função apenas controla o que é exibido no navegador.
+     */
     function renderSuggestions(isAdminUser) {
         const user = auth.currentUser;
 
@@ -176,6 +261,13 @@ export function initAuth(ctx) {
         `).join("");
     }
 
+    /**
+     * Abre a assinatura em tempo real de `suggestions` somente para admin.
+     *
+     * Antes de criar uma nova assinatura, cancela a antiga e limpa a lista.
+     * A query ordena pela data decrescente. Cada snapshot substitui o array
+     * local e chama renderSuggestions(true).
+     */
     function subscribeSuggestionsIfAdmin(isAdminUser) {
         unsubscribeSuggestions?.();
         unsubscribeSuggestions = null;
@@ -207,6 +299,27 @@ export function initAuth(ctx) {
         );
     }
 
+    /**
+     * Inicia os três listeners Firestore essenciais da conta.
+     *
+     * CATÁLOGO (`tracks`):
+     * - recebe somente documentos cujo recordType é "track";
+     * - remove status "uploading" para não expor upload incompleto;
+     * - ordena em memória pela data de criação;
+     * - entrega o array ao app.js e manda renderizar.
+     *
+     * SALVAS (`users/{uid}/savedTracks`):
+     * - transforma IDs em Set;
+     * - atualiza Home, Biblioteca e coração do player.
+     *
+     * PLAYLISTS (`users/{uid}/playlists`):
+     * - transforma documentos em objetos;
+     * - ordena por criação;
+     * - atualiza a Biblioteca.
+     *
+     * O listener do catálogo também identifica dados no layout antigo e pede
+     * ao storage.js uma migração quando a conta possui permissão administrativa.
+     */
     function subscribeAccountData(user) {
         stopSubscriptions();
 
@@ -262,6 +375,25 @@ export function initAuth(ctx) {
         });
     }
 
+    // ------------------------------------------------------------------------
+    // OBSERVADOR CENTRAL DA SESSÃO
+    // ------------------------------------------------------------------------
+    // Firebase chama este callback na carga inicial e sempre que login/logout
+    // muda. Ele é a "chave" que libera ou bloqueia o restante do aplicativo.
+    //
+    // COM USUÁRIO:
+    // - garante users/{uid};
+    // - esconde a tela de login e mostra o app;
+    // - preenche nome/avatar/e-mail;
+    // - identifica se é admin;
+    // - inicia os listeners do Firestore.
+    //
+    // SEM USUÁRIO:
+    // - cancela listeners;
+    // - limpa estado pessoal e player;
+    // - esconde o app;
+    // - volta ao formulário de login.
+    // ------------------------------------------------------------------------
     onAuthStateChanged(auth, async (user) => {
         if (user) {
             try {
@@ -297,6 +429,15 @@ export function initAuth(ctx) {
         setGateMode("login");
     });
 
+    // ------------------------------------------------------------------------
+    // FORMULÁRIO DE LOGIN / CADASTRO
+    // ------------------------------------------------------------------------
+    // O mesmo formulário possui dois modos. `authMode` decide entre
+    // signInWithEmailAndPassword() e createUserWithEmailAndPassword().
+    // O botão fica desabilitado durante o await para impedir envio duplicado.
+    // O sucesso não precisa liberar a tela manualmente: a mudança de sessão
+    // dispara onAuthStateChanged(), que executa todo o fluxo correto acima.
+    // ------------------------------------------------------------------------
     gateAuthForm.addEventListener("submit", async (event) => {
         event.preventDefault();
         const email = $("#gateEmail").value.trim();

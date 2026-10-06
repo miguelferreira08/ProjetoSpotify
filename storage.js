@@ -16,11 +16,51 @@ import { CHUNK_SIZE } from "./config.js";
 import { gunzipBytes } from "./media.js";
 import { sameBytes } from "./utils.js";
 
+// ============================================================================
+// STORAGE.JS — CAMADA DE ARMAZENAMENTO BINÁRIO DO REDBEAT
+// ============================================================================
+//
+// POR QUE EXISTEM CHUNKS?
+// ----------------------
+// O RedBeat está usando Firestore para armazenar a mídia sem Firebase Storage.
+// Como um documento Firestore possui limite de tamanho, um MP3 não pode ser
+// colocado inteiro em um único documento. Então o arquivo comprimido é dividido.
+//
+// ESTRUTURA ATUAL
+// ---------------
+// tracks/{trackId}                         -> metadados da faixa
+// tracks/{trackId}/audioChunks/000000      -> primeiro pedaço do áudio
+// tracks/{trackId}/audioChunks/000001      -> segundo pedaço
+// tracks/{trackId}/coverChunks/000000      -> pedaço da capa
+//
+// FLUXO DE GRAVAÇÃO
+// Uint8Array comprimido -> splitBytes() -> writeBatch() -> subcoleção de chunks.
+//
+// FLUXO DE REPRODUÇÃO
+// getDocs(orderBy index) -> une chunks -> gunzipBytes() -> Blob -> Object URL.
+//
+// CACHE EM MEMÓRIA
+// ----------------
+// Object URLs já montadas ficam em Maps para que tocar a mesma faixa/capa de
+// novo não obrigue outra leitura completa do Firestore durante a mesma sessão.
+// `assetLoading` também evita duas reconstruções simultâneas do mesmo recurso.
+// ============================================================================
+
+// URLs temporárias já prontas são indexadas pelo ID da faixa. `assetLoading`
+// guarda Promises em andamento: se dois componentes pedirem a mesma capa ao
+// mesmo tempo, ambos aguardam a MESMA operação. `migrationAttempted` impede
+// repetir migração antiga em loop dentro da mesma sessão.
 const coverUrlCache = new Map();
 const audioUrlCache = new Map();
 const assetLoading = new Map();
 const migrationAttempted = new Set();
 
+/**
+ * Divide um Uint8Array em pedaços de no máximo CHUNK_SIZE.
+ *
+ * `slice()` cria cada segmento mantendo a ordem original. O índice do array
+ * depois será usado como índice persistido no documento Firestore.
+ */
 function splitBytes(bytes) {
     const chunks = [];
 
@@ -31,6 +71,21 @@ function splitBytes(bytes) {
     return chunks;
 }
 
+/**
+ * Grava todos os chunks de áudio ou capa em uma subcoleção.
+ *
+ * Parâmetros:
+ * - `trackRef`: referência de tracks/{trackId};
+ * - `name`: "audioChunks" ou "coverChunks";
+ * - `bytes`: arquivo comprimido completo em Uint8Array;
+ * - `onBytes`: callback opcional que recebe quantos bytes acabaram de ser salvos.
+ *
+ * Os chunks são enviados em pequenos writeBatch() de 6 documentos. Cada doc
+ * recebe `index`, `byteLength` e `data` (Firestore Bytes). O nome `000000`,
+ * `000001` etc. também mantém organização visual no console.
+ *
+ * Retorno: quantidade total de chunks criada, salva depois no documento da faixa.
+ */
 export async function writeSubcollectionChunks(trackRef, name, bytes, onBytes) {
     const chunks = splitBytes(bytes);
     const chunksCollection = collection(trackRef, name);
@@ -59,6 +114,13 @@ export async function writeSubcollectionChunks(trackRef, name, bytes, onBytes) {
     return chunks.length;
 }
 
+/**
+ * Reconstrói o arquivo comprimido a partir da subcoleção atual.
+ *
+ * A query usa orderBy("index", "asc") porque a ordem é crítica: trocar dois
+ * pedaços corromperia o MP3/imagem. Depois calcula o tamanho total, cria um único
+ * Uint8Array e copia cada chunk na posição correta usando `offset`.
+ */
 async function readSubcollectionChunks(track, type) {
     const collectionName = type === "audio" ? "audioChunks" : "coverChunks";
     const chunksCollection = collection(db, "tracks", track.id, collectionName);
@@ -81,6 +143,16 @@ async function readSubcollectionChunks(track, type) {
     return result;
 }
 
+/**
+ * Verifica a integridade do upload antes de marcar a faixa como `ready`.
+ *
+ * A função relê capa e áudio diretamente do Firestore, reconstrói os bytes e
+ * compara com os arrays originais usando sameBytes(). Isso testa o caminho real
+ * de persistência, não apenas os dados ainda presentes na memória do navegador.
+ *
+ * Qualquer diferença lança `verify-failed`; o catch do upload no app.js então
+ * executa a limpeza dos dados parciais.
+ */
 export async function verifyStoredTrackBytes(trackId, coverBytes, audioBytes) {
     const storedTrack = {
         id: trackId,
@@ -97,12 +169,24 @@ export async function verifyStoredTrackBytes(trackId, coverBytes, audioBytes) {
     }
 }
 
+/**
+ * Monta a referência de um chunk no formato usado pelas versões antigas.
+ * Esse layout existia diretamente dentro de `tracks` e é mantido apenas para
+ * compatibilidade/migração de músicas cadastradas anteriormente.
+ */
 function legacyChunkRef(trackId, type, index) {
     const typeCode = type === "audio" ? "a" : "c";
     const chunkId = String(index).padStart(6, "0");
     return doc(db, "tracks", `${trackId}__${typeCode}__${chunkId}`);
 }
 
+/**
+ * Lê uma faixa ainda armazenada no layout legado.
+ *
+ * Como o documento principal guarda a quantidade esperada de chunks antigos,
+ * a função busca cada referência por índice. Se um único pedaço estiver ausente,
+ * interrompe a reconstrução em vez de produzir um arquivo silenciosamente ruim.
+ */
 async function readLegacyChunks(track, type) {
     const count = Number(type === "audio" ? track.audioChunks : track.coverChunks) || 0;
 
@@ -134,6 +218,10 @@ async function readLegacyChunks(track, type) {
     return result;
 }
 
+/**
+ * Seleciona automaticamente qual leitor usar conforme `storageLayout` da faixa.
+ * Isso permite que player/capas usem uma API única sem conhecer a versão do dado.
+ */
 async function readStoredBytes(track, type) {
     if (track.storageLayout === "subcollections-v2") {
         return readSubcollectionChunks(track, type);
@@ -142,6 +230,22 @@ async function readStoredBytes(track, type) {
     return readLegacyChunks(track, type);
 }
 
+/**
+ * Converte a mídia armazenada no Firestore em uma URL utilizável pelo navegador.
+ *
+ * Fluxo detalhado:
+ * 1. escolhe o cache de áudio ou capa;
+ * 2. se a URL já existir, retorna imediatamente sem nova leitura;
+ * 3. se outra chamada já estiver reconstruindo o mesmo recurso, reutiliza sua
+ *    Promise através de `assetLoading`;
+ * 4. readStoredBytes() lê o layout atual ou legado;
+ * 5. se `audioCompression/coverCompression` for "gzip", gunzipBytes() restaura;
+ * 6. cria `Blob` com MIME apropriado;
+ * 7. URL.createObjectURL() gera uma URL temporária local;
+ * 8. armazena a URL em cache e remove a Promise de `assetLoading` no finally.
+ *
+ * Essa URL é atribuída a `audio.src` ou `background-image` pelo app.js.
+ */
 export async function buildAssetUrl(track, type) {
     const key = `${type}:${track.id}`;
     const cache = type === "audio" ? audioUrlCache : coverUrlCache;
@@ -176,11 +280,17 @@ export async function buildAssetUrl(track, type) {
     }
 }
 
+/** Retorna a Object URL já montada, sem provocar leitura no Firestore. */
 export function getCachedAssetUrl(trackId, type = "audio") {
     const cache = type === "audio" ? audioUrlCache : coverUrlCache;
     return cache.get(trackId) || "";
 }
 
+/**
+ * Revoga e remove uma Object URL específica.
+ * Necessário para liberar memória e também para forçar reconstrução quando o
+ * player detecta que uma URL pode estar problemática.
+ */
 export function revokeCachedAssetUrl(trackId, type = "audio") {
     const cache = type === "audio" ? audioUrlCache : coverUrlCache;
     const cached = cache.get(trackId);
@@ -191,11 +301,16 @@ export function revokeCachedAssetUrl(trackId, type = "audio") {
     }
 }
 
+/** Limpa simultaneamente os caches de áudio e capa de uma faixa. */
 export function clearCachedTrackAssets(trackId) {
     revokeCachedAssetUrl(trackId, "audio");
     revokeCachedAssetUrl(trackId, "cover");
 }
 
+/**
+ * Revoga todas as Object URLs criadas na sessão e esvazia os Maps.
+ * É chamada antes de sair/descarregar a página para liberar memória do browser.
+ */
 export function revokeAllAssetUrls() {
     for (const url of audioUrlCache.values()) {
         URL.revokeObjectURL(url);
@@ -209,6 +324,13 @@ export function revokeAllAssetUrls() {
     coverUrlCache.clear();
 }
 
+/**
+ * Exclui todos os documentos de uma subcoleção de chunks.
+ *
+ * Firestore não apaga subcoleções automaticamente quando o pai é excluído.
+ * Por isso esta função lê os docs e cria batches de até 300 exclusões antes de
+ * remover tracks/{id}. Também é usada no rollback de uploads que falharam.
+ */
 export async function deleteSubcollection(trackRef, name) {
     const snapshot = await getDocs(collection(trackRef, name));
 
@@ -223,6 +345,18 @@ export async function deleteSubcollection(trackRef, name) {
     }
 }
 
+/**
+ * Migra chunks do formato antigo para as subcoleções atuais.
+ *
+ * 1. evita repetir a tentativa usando migrationAttempted;
+ * 2. consulta documentos antigos cujo parentTrackId aponta para a faixa;
+ * 3. identifica se cada chunk é capa ou áudio;
+ * 4. grava o mesmo Bytes no novo caminho e apaga o documento antigo no batch;
+ * 5. ao final marca `storageLayout: "subcollections-v2"` no documento principal;
+ * 6. chama `onMigrated` para que a interface possa informar o administrador.
+ *
+ * Falhas são registradas como warning para não impedir o restante do catálogo.
+ */
 export async function migrateLegacyTrack(track, onMigrated) {
     if (migrationAttempted.has(track.id) || track.storageLayout === "subcollections-v2") {
         return;
