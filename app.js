@@ -1,63 +1,45 @@
 import {
-    initializeApp,
-} from "https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js";
-import {
-    getAuth,
-    setPersistence,
-    browserLocalPersistence,
-    onAuthStateChanged,
-    createUserWithEmailAndPassword,
-    signInWithEmailAndPassword,
-    signOut,
-} from "https://www.gstatic.com/firebasejs/12.19.0/firebase-auth.js";
-import {
-    getFirestore,
     collection,
     deleteDoc,
     doc,
-    onSnapshot,
     query,
     where,
-    orderBy,
     serverTimestamp,
     setDoc,
     updateDoc,
     writeBatch,
-    getDoc,
     getDocs,
-    Bytes,
 } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js";
-const firebaseConfig = {
-    apiKey: "AIzaSyBEiPrY_xJTgoUAmFVW88Zy7YCDF9zaUho",
-    authDomain: "projetospotify-e06a3.firebaseapp.com",
-    projectId: "projetospotify-e06a3",
-    storageBucket: "projetospotify-e06a3.firebasestorage.app",
-    messagingSenderId: "120996325072",
-    appId: "1:120996325072:web:9f9d1ecaf67ec9686ae0d5",
-    measurementId: "G-Q3PJEKW8B6",
-};
-const firebaseApp = initializeApp(firebaseConfig);
-const auth = getAuth(firebaseApp);
-const db = getFirestore(firebaseApp);
-setPersistence(auth, browserLocalPersistence).catch(console.warn);
-const CHUNK_SIZE = 480 * 1024;
-const MAX_AUDIO_SIZE = 25 * 1024 * 1024;
-const MAX_COVER_SIZE = 10 * 1024 * 1024;
-const ADMIN_EMAIL = "miguelfer0808@gmail.com";
-const MUSIC_GENRES = [
-    "Eletrônica",
-    "Rock",
-    "Funk",
-    "Pagode",
-    "Sertanejo",
-    "Trap",
-    "Pop",
-    "Regional",
-    "Reggae",
-    "Jazz",
-    "Hip-Hop/Rap",
-    "Outros",
-];
+import { auth, db } from "./firebase.js";
+import {
+    ADMIN_EMAIL,
+    MAX_AUDIO_SIZE,
+    MAX_COVER_SIZE,
+    MUSIC_GENRES,
+} from "./config.js";
+import {
+    byteSizeLabel,
+    escapeHtml,
+    formatTime,
+    initials,
+    normalizeSearchValue,
+    wait,
+} from "./utils.js";
+import { gzipBlob, optimizeCover, readAudioDuration } from "./media.js";
+import {
+    buildAssetUrl,
+    clearCachedTrackAssets,
+    deleteSubcollection,
+    getCachedAssetUrl,
+    migrateLegacyTrack,
+    revokeAllAssetUrls,
+    revokeCachedAssetUrl,
+    verifyStoredTrackBytes,
+    writeSubcollectionChunks,
+} from "./storage.js";
+import { initAuth } from "./auth.js";
+import { initScrollbar } from "./scrollbar.js";
+import { initPWA } from "./pwa.js";
 const $ = (selector) => document.querySelector(selector);
 const audio = $("#audio");
 const trackList = $("#trackList");
@@ -131,10 +113,8 @@ let libraryMode = "overview";
 let selectedPlaylist = null;
 let currentLibraryTracks = [];
 let selectedActionTrack = null;
-let authMode = "login";
 let isAdminUser = false;
 let activeGenre = "";
-let suggestions = [];
 let repeat = false;
 let shuffle = false;
 let selectedDurationSeconds = 0;
@@ -142,59 +122,8 @@ let localCoverPreviewUrl = null;
 let toastTimer = null;
 let playbackRequestId = 0;
 let fullscreenCloseTimer = null;
-let unsubscribeTracks = null;
-let unsubscribeSaved = null;
-let unsubscribePlaylists = null;
-let unsubscribeSuggestions = null;
-const coverUrlCache = new Map();
-const audioUrlCache = new Map();
-const assetLoading = new Map();
-const migrationAttempted = new Set();
 audio.volume = Number(volumeBar.value);
 // ==================== UTILITÁRIOS ====================
-
-function safeText(value = "") {
-    return String(value ?? "");
-}
-
-function normalizeSearchValue(value = "") {
-    return safeText(value)
-        .normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
-}
-
-function wait(milliseconds) {
-    return new Promise((resolve) => {
-        setTimeout(resolve, milliseconds);
-    });
-}
-
-function escapeHtml(value) {
-    return safeText(value)
-        .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"',
-            "&quot;").replaceAll("'", "&#039;");
-}
-
-function initials(value = "R") {
-    const text = safeText(value).trim();
-    return text ? text[0].toUpperCase() : "R";
-}
-
-function formatTime(seconds) {
-    if (!Number.isFinite(seconds) || seconds < 0) {
-        return "0:00";
-    }
-    const minutes = Math.floor(seconds / 60);
-    const remainingSeconds = Math.floor(seconds % 60)
-        .toString().padStart(2, "0");
-    return `${minutes}:${remainingSeconds}`;
-}
-
-function byteSizeLabel(bytes) {
-    if (bytes < 1048576) {
-        return `${(bytes / 1024).toFixed(0)} KB`;
-    }
-    return `${(bytes / 1048576).toFixed(1)} MB`;
-}
 
 function showToast(message, type = "success") {
     toast.textContent = message;
@@ -241,526 +170,6 @@ function updateAdminUI(user) {
         copy.textContent = isAdminUser
             ? "Você administra o catálogo global. Somente esta conta pode adicionar ou excluir músicas."
             : "Sua biblioteca e suas playlists ficam vinculadas à sua conta. O catálogo é administrado pelo RedBeat.";
-    }
-}
-// ==================== AUTENTICAÇÃO ====================
-
-function friendlyAuthError(code = "") {
-    const messages = {
-        "auth/invalid-credential": "E-mail ou senha inválidos.",
-            "auth/user-not-found": "Conta não encontrada.", "auth/wrong-password": "Senha incorreta.",
-            "auth/email-already-in-use": "Este e-mail já possui uma conta.",
-        "auth/weak-password": "Use uma senha mais forte, com pelo menos 6 caracteres.",
-            "auth/invalid-email": "Digite um e-mail válido.",
-            "auth/too-many-requests": "Muitas tentativas. Aguarde e tente novamente.",
-        "auth/network-request-failed": "Falha de rede. Verifique sua conexão.",
-            "auth/operation-not-allowed": "O login por e-mail/senha não está habilitado.",
-    };
-    return messages[code] || `Não foi possível autenticar (${code || "erro"}).`;
-}
-
-function setGateMode(mode) {
-    authMode = mode;
-    const login = mode === "login";
-    $("#gateTitle").textContent = login
-        ? "Entrar no RedBeat" : "Criar conta";
-    $("#gateCopy").textContent = login
-        ? "Entre com sua conta para acessar músicas, biblioteca e playlists." : "Crie sua conta para sincronizar sua biblioteca em todos os dispositivos.";
-    $("#gateSubmit").textContent = login
-        ? "Entrar" : "Criar conta";
-    $("#gateToggle").textContent = login
-        ? "Criar uma conta" : "Já tenho uma conta";
-    $("#gatePassword").autocomplete = login
-        ? "current-password" : "new-password";
-    $("#gateError").classList.add("hidden");
-}
-
-async function ensureUserProfile(user) {
-    await setDoc(doc(db, "users", user.uid), {
-        email: user.email || "", updatedAt: serverTimestamp(),
-    }, { merge: true });
-}
-
-function stopSubscriptions() {
-    unsubscribeTracks?.();
-    unsubscribeSaved?.();
-    unsubscribePlaylists?.();
-    unsubscribeSuggestions?.();
-    unsubscribeTracks = null;
-    unsubscribeSaved = null;
-    unsubscribePlaylists = null;
-    unsubscribeSuggestions = null;
-}
-
-function subscribeAccountData(user) {
-    stopSubscriptions();
-    const tracksQuery = query(collection(db, "tracks"), where("recordType", "==", "track"));
-    unsubscribeTracks = onSnapshot(tracksQuery, (snapshot) => {
-        tracks = snapshot.docs
-            .map((document) => ({ id: document.id, ...document.data(),
-        }))
-            .filter((track) => track.status !== "uploading").sort((a,
-                b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
-        renderHome();
-        renderLibrary();
-        refreshCurrentTrack();
-        for (const track of tracks) {
-            const hasLegacyChunks = Number(track.audioChunks || 0) > 0 ||
-                Number(track.coverChunks || 0) > 0;
-            if (isOwner(track) &&
-                track.storageLayout !== "subcollections-v2" && hasLegacyChunks) {
-                migrateLegacyTrack(track);
-            }
-        }
-    }, (error) => {
-        console.error(error);
-        showToast("Não foi possível carregar as músicas.", "error");
-    });
-    unsubscribeSaved = onSnapshot(collection(db, "users", user.uid, "savedTracks"), (snapshot) => {
-        savedTrackIds = new Set(snapshot.docs.map((document) => document.id));
-        renderHome();
-        renderLibrary();
-        updatePlayerUI();
-    });
-    unsubscribePlaylists = onSnapshot(collection(db, "users", user.uid, "playlists"), (snapshot) => {
-        playlists = snapshot.docs
-            .map((document) => ({ id: document.id, ...document.data(),
-        }))
-            .sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
-        renderLibrary();
-    });
-}
-
-
-function formatSuggestionDate(timestamp) {
-    if (!timestamp?.toDate) {
-        return "agora";
-    }
-
-    return new Intl.DateTimeFormat("pt-BR", {
-        day: "2-digit",
-        month: "2-digit",
-        year: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-    }).format(timestamp.toDate());
-}
-
-function renderSuggestions() {
-    const user = auth.currentUser;
-
-    if (suggestionUserEmail) {
-        suggestionUserEmail.value = user?.email || "";
-    }
-
-    if (!isAdminUser) {
-        suggestionBadge?.classList.add("hidden");
-        return;
-    }
-
-    const count = suggestions.length;
-    suggestionTotal.textContent = `${count} ${count === 1 ? "sugestão" : "sugestões"}`;
-    suggestionBadge.textContent = String(count);
-    suggestionBadge.classList.toggle("hidden", count === 0);
-
-    if (!count) {
-        suggestionList.innerHTML = `
-            <div class="suggestion-empty">
-                <strong>Nenhuma sugestão recebida</strong>
-                <span>As sugestões dos usuários aparecerão aqui.</span>
-            </div>
-        `;
-        return;
-    }
-
-    suggestionList.innerHTML = suggestions.map((suggestion) => `
-        <article class="suggestion-card" data-suggestion-id="${suggestion.id}">
-            <div class="suggestion-card-main">
-                <strong class="suggestion-card-title">${escapeHtml(suggestion.songName || "Música sem nome")}</strong>
-                <span class="suggestion-card-artist">${escapeHtml(suggestion.artist || "Artista não informado")}</span>
-                <div class="suggestion-card-meta">
-                    <span>${escapeHtml(suggestion.senderEmail || "Usuário")}</span>
-                    <span>${escapeHtml(formatSuggestionDate(suggestion.createdAt))}</span>
-                </div>
-            </div>
-            <button
-                class="suggestion-remove"
-                type="button"
-                data-action="remove-suggestion"
-                aria-label="Excluir sugestão"
-                title="Excluir sugestão"
-            >×</button>
-        </article>
-    `).join("");
-}
-
-function subscribeSuggestionsIfAdmin() {
-    unsubscribeSuggestions?.();
-    unsubscribeSuggestions = null;
-    suggestions = [];
-    renderSuggestions();
-
-    if (!isAdminUser) {
-        return;
-    }
-
-    const suggestionsQuery = query(
-        collection(db, "suggestions"),
-        orderBy("createdAt", "desc"),
-    );
-
-    unsubscribeSuggestions = onSnapshot(
-        suggestionsQuery,
-        (snapshot) => {
-            suggestions = snapshot.docs.map((document) => ({
-                id: document.id,
-                ...document.data(),
-            }));
-            renderSuggestions();
-        },
-        (error) => {
-            console.error("Sugestões:", error);
-            showToast("Não foi possível carregar as sugestões.", "error");
-        },
-    );
-}
-
-onAuthStateChanged(auth, async (user) => {
-    if (user) {
-        try {
-            await ensureUserProfile(user);
-        }
-        catch (error) {
-            console.warn(error);
-        }
-        $("#authGate").classList.add("hidden");
-        $("#appRoot").classList.remove("hidden");
-        const name = user.email?.split("@")[0] || "Usuário";
-        $("#profileLabel").textContent = name;
-        $("#avatar").textContent = initials(name);
-        $("#accountEmail").textContent = user.email || "Usuário";
-        updateAdminUI(user);
-        subscribeAccountData(user);
-        subscribeSuggestionsIfAdmin();
-        renderSuggestions();
-        return;
-    }
-    stopSubscriptions();
-    updateAdminUI(null);
-    suggestions = [];
-    renderSuggestions();
-    tracks = [];
-    playlists = [];
-    savedTrackIds.clear();
-    audio.pause();
-    audio.removeAttribute("src");
-    currentTrack = null;
-    $("#appRoot").classList.add("hidden");
-    $("#authGate").classList.remove("hidden");
-    setGateMode("login");
-});
-gateAuthForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const email = $("#gateEmail").value.trim();
-    const password = $("#gatePassword").value;
-    const errorBox = $("#gateError");
-    const submit = $("#gateSubmit");
-    errorBox.classList.add("hidden");
-    submit.disabled = true;
-    try {
-        if (authMode === "login") {
-            await signInWithEmailAndPassword(auth, email, password);
-        }
-        else {
-            await createUserWithEmailAndPassword(auth, email, password);
-        }
-        gateAuthForm.reset();
-    }
-    catch (error) {
-        console.error(error);
-        errorBox.textContent = friendlyAuthError(error.code);
-        errorBox.classList.remove("hidden");
-    }
-    finally {
-        submit.disabled = false;
-        submit.textContent = authMode === "login" ? "Entrar" : "Criar conta";
-    }
-});
-$("#gateToggle").addEventListener("click", () => {
-    setGateMode(authMode === "login" ? "register" : "login");
-});
-$("#logoutBtn").addEventListener("click", async () => {
-    accountModal.close();
-    await signOut(auth);
-});
-$("#profileBtn").addEventListener("click", () => {
-    accountModal.showModal();
-});
-// ==================== ÁUDIO, CAPA E COMPRESSÃO ====================
-
-function readAudioDuration(file) {
-    return new Promise((resolve, reject) => {
-        const audioElement = document.createElement("audio");
-        const objectUrl = URL.createObjectURL(file);
-        const cleanup = () => {
-            URL.revokeObjectURL(objectUrl);
-            audioElement.removeAttribute("src");
-            audioElement.load();
-        };
-        audioElement.preload = "metadata";
-        audioElement.addEventListener("loadedmetadata", () => {
-            const seconds = Math.round(audioElement.duration);
-            cleanup();
-            if (Number.isFinite(seconds) && seconds > 0) {
-                resolve(seconds);
-            }
-            else {
-                reject(new Error("duration"));
-            }
-        }, { once: true });
-        audioElement.addEventListener("error", () => {
-            cleanup();
-            reject(new Error("metadata"));
-        }, { once: true });
-        audioElement.src = objectUrl;
-    });
-}
-
-async function gzipBlob(blob) {
-    if ("CompressionStream" in globalThis) {
-        const stream = blob
-            .stream().pipeThrough(new CompressionStream("gzip"));
-        return new Uint8Array(await new Response(stream).arrayBuffer());
-    }
-    const { gzip } = await import("https://cdn.jsdelivr.net/npm/pako@2.1.0/+esm");
-    return gzip(new Uint8Array(await blob.arrayBuffer()));
-}
-
-async function gunzipBytes(bytes) {
-    if ("DecompressionStream" in globalThis) {
-        const stream = new Blob([bytes])
-            .stream().pipeThrough(new DecompressionStream("gzip"));
-        return new Uint8Array(await new Response(stream).arrayBuffer());
-    }
-    const { ungzip } = await import("https://cdn.jsdelivr.net/npm/pako@2.1.0/+esm");
-    return ungzip(bytes);
-}
-
-async function optimizeCover(file) {
-    let source = null;
-    let cleanup = () => { };
-    if ("createImageBitmap" in globalThis) {
-        const bitmap = await createImageBitmap(file);
-        source = {
-            width: bitmap.width, height: bitmap.height, draw: (context, width, height) => {
-                context.drawImage(bitmap, 0, 0, width, height);
-            },
-        };
-        cleanup = () => bitmap.close?.();
-    }
-    else {
-        const objectUrl = URL.createObjectURL(file);
-        const image = new Image();
-        image.src = objectUrl;
-        await image.decode();
-        source = {
-            width: image.naturalWidth, height: image.naturalHeight, draw: (context, width, height) => {
-                context.drawImage(image, 0, 0, width, height);
-            },
-        };
-        cleanup = () => URL.revokeObjectURL(objectUrl);
-    }
-    try {
-        const maxSide = 720;
-        const ratio = Math.min(1, maxSide / Math.max(source.width, source.height));
-        const width = Math.max(1, Math.round(source.width * ratio));
-        const height = Math.max(1, Math.round(source.height * ratio));
-        const canvas = document.createElement("canvas");
-        canvas.width = width;
-        canvas.height = height;
-        const context = canvas.getContext("2d", {
-            alpha: false,
-        });
-        context.imageSmoothingEnabled = true;
-        context.imageSmoothingQuality = "high";
-        source.draw(context, width, height);
-        return await new Promise((resolve, reject) => {
-            canvas.toBlob((blob) => {
-                if (blob) {
-                    resolve(blob);
-                }
-                else {
-                    reject(new Error("cover"));
-                }
-            }, "image/webp", 0.78);
-        });
-    }
-    finally {
-        cleanup();
-    }
-}
-// ==================== FIRESTORE E CHUNKS ====================
-
-function splitBytes(bytes) {
-    const chunks = [];
-    for (let offset = 0; offset < bytes.byteLength; offset += CHUNK_SIZE) {
-        chunks.push(bytes.slice(offset, Math.min(offset + CHUNK_SIZE, bytes.byteLength)));
-    }
-    return chunks;
-}
-
-async function writeSubcollectionChunks(trackRef, name, bytes, onBytes) {
-    const chunks = splitBytes(bytes);
-    const chunksCollection = collection(trackRef, name);
-    for (let start = 0; start < chunks.length; start += 6) {
-        const batch = writeBatch(db);
-        let batchBytes = 0;
-        for (let index = start; index < Math.min(start + 6, chunks.length); index++) {
-            const chunk = chunks[index];
-            const chunkRef = doc(chunksCollection, String(index).padStart(6, "0"));
-            batch.set(chunkRef, {
-                index, byteLength: chunk.byteLength, data: Bytes.fromUint8Array(chunk),
-            });
-            batchBytes += chunk.byteLength;
-        }
-        await batch.commit();
-        onBytes?.(batchBytes);
-    }
-    return chunks.length;
-}
-
-async function readSubcollectionChunks(track, type) {
-    const collectionName = type === "audio"
-        ? "audioChunks" : "coverChunks";
-    const chunksCollection = collection(db, "tracks", track.id, collectionName);
-    const snapshot = await getDocs(query(chunksCollection, orderBy("index", "asc")));
-    if (snapshot.empty) {
-        throw new Error(`Sem blocos ${type}`);
-    }
-    const chunks = snapshot.docs.map((document) => document.data().data.toUint8Array());
-    const total = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
-    const result = new Uint8Array(total);
-    let offset = 0;
-    for (const chunk of chunks) {
-        result.set(chunk, offset);
-        offset += chunk.byteLength;
-    }
-    return result;
-}
-
-function legacyChunkRef(trackId, type, index) {
-    const typeCode = type === "audio" ? "a" : "c";
-    const chunkId = String(index).padStart(6, "0");
-    return doc(db, "tracks", `${trackId}__${typeCode}__${chunkId}`);
-}
-
-async function readLegacyChunks(track, type) {
-    const count = Number(type === "audio"
-        ? track.audioChunks : track.coverChunks) || 0;
-    if (!count) {
-        throw new Error("Sem blocos antigos");
-    }
-    const chunks = [];
-    for (let index = 0; index < count; index++) {
-        const snapshot = await getDoc(legacyChunkRef(track.id, type, index));
-        if (!snapshot.exists()) {
-            throw new Error("Bloco antigo ausente");
-        }
-        chunks.push(snapshot.data().data.toUint8Array());
-    }
-    const total = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
-    const result = new Uint8Array(total);
-    let offset = 0;
-    for (const chunk of chunks) {
-        result.set(chunk, offset);
-        offset += chunk.byteLength;
-    }
-    return result;
-}
-
-async function readStoredBytes(track, type) {
-    if (track.storageLayout === "subcollections-v2") {
-        return readSubcollectionChunks(track, type);
-    }
-    return readLegacyChunks(track, type);
-}
-
-async function buildAssetUrl(track, type) {
-    const key = `${type}:${track.id}`;
-    const cache = type === "audio"
-        ? audioUrlCache : coverUrlCache;
-    if (cache.has(track.id)) {
-        return cache.get(track.id);
-    }
-    if (assetLoading.has(key)) {
-        return assetLoading.get(key);
-    }
-    const promise = (async () => {
-        const stored = await readStoredBytes(track, type);
-        const compression = type === "audio"
-            ? track.audioCompression : track.coverCompression;
-        const raw = compression === "gzip"
-            ? await gunzipBytes(stored) : stored;
-        const mime = type === "audio"
-            ? track.audioMime || "audio/mpeg" : track.coverMime || "image/webp";
-        const url = URL.createObjectURL(new Blob([raw], { type: mime }));
-        cache.set(track.id, url);
-        return url;
-    })();
-    assetLoading.set(key, promise);
-    try {
-        return await promise;
-    }
-    finally {
-        assetLoading.delete(key);
-    }
-}
-
-async function deleteSubcollection(trackRef, name) {
-    const snapshot = await getDocs(collection(trackRef, name));
-    for (let start = 0; start < snapshot.docs.length; start += 300) {
-        const batch = writeBatch(db);
-        for (const document of snapshot.docs.slice(start, start + 300)) {
-            batch.delete(document.ref);
-        }
-        await batch.commit();
-    }
-}
-
-async function migrateLegacyTrack(track) {
-    if (migrationAttempted.has(track.id) ||
-        track.storageLayout === "subcollections-v2") {
-        return;
-    }
-    migrationAttempted.add(track.id);
-    try {
-        const legacy = await getDocs(query(collection(db, "tracks"), where("parentTrackId", "==", track.id)));
-        if (legacy.empty) {
-            return;
-        }
-        for (let start = 0; start < legacy.docs.length; start += 150) {
-            const batch = writeBatch(db);
-            for (const document of legacy.docs.slice(start, start + 150)) {
-                const chunk = document.data();
-                const subcollection = chunk.chunkType === "cover"
-                    ? "coverChunks" : "audioChunks";
-                const target = doc(db, "tracks", track.id, subcollection,
-                    String(Number(chunk.index) || 0).padStart(6, "0"));
-                batch.set(target, {
-                    index: Number(chunk.index) || 0, byteLength: Number(chunk.byteLength) || 0,
-                        data: chunk.data,
-                });
-                batch.delete(document.ref);
-            }
-            await batch.commit();
-        }
-        await updateDoc(doc(db, "tracks", track.id), {
-            storageLayout: "subcollections-v2", migratedAt: serverTimestamp(),
-        });
-        showToast(`Dados de “${track.title}” organizados.`);
-    }
-    catch (error) {
-        console.warn("Migração antiga ignorada:", error);
     }
 }
 // ==================== RENDERIZAÇÃO ====================
@@ -1190,6 +599,10 @@ async function loadPlaylist(playlist) {
     libraryMode = "playlist";
     showLibraryDetail();
 }
+function renderSuggestions() {
+    // Renderização administrada em auth.js
+}
+
 // ==================== NAVEGAÇÃO ====================
 
 function canGoBackInsideApp() {
@@ -1261,7 +674,7 @@ function setView(view) {
         renderSuggestions();
     }
     updateAppBackButton();
-    pageScrollContainer?.scrollTo({
+    $("#pageScrollContainer")?.scrollTo({
         top: 0, behavior: "smooth",
     });
 }
@@ -1656,6 +1069,8 @@ uploadForm.addEventListener("submit", async (event) => {
         };
         const coverCount = await writeSubcollectionChunks(trackRef, "coverChunks", coverGzip, report);
         const audioCount = await writeSubcollectionChunks(trackRef, "audioChunks", audioGzip, report);
+        progressText.textContent = "Verificando integridade do upload…";
+        await verifyStoredTrackBytes(trackRef.id, coverGzip, audioGzip);
         await updateDoc(trackRef, {
             coverChunkCount: coverCount, audioChunkCount: audioCount, status: "ready",
                 updatedAt: serverTimestamp(),
@@ -1732,8 +1147,7 @@ async function deleteTrack(track) {
             }
         }
         await deleteDoc(trackRef);
-        audioUrlCache.delete(track.id);
-        coverUrlCache.delete(track.id);
+        clearCachedTrackAssets(track.id);
         showToast("Música excluída.");
     }
     catch (error) {
@@ -1819,6 +1233,108 @@ suggestionList.addEventListener("click", async (event) => {
 
 // ==================== PLAYER E TELA CHEIA ====================
 
+let playbackHealthTimer = null;
+const playbackRecoveryAttempts = new Map();
+
+function clearPlaybackHealthTimer() {
+    clearTimeout(playbackHealthTimer);
+    playbackHealthTimer = null;
+}
+
+function resetPlaybackRecovery(trackId = currentTrack?.id) {
+    if (trackId) {
+        playbackRecoveryAttempts.delete(trackId);
+    }
+
+    clearPlaybackHealthTimer();
+}
+
+function schedulePlaybackHealthCheck(delay = 1600) {
+    clearPlaybackHealthTimer();
+
+    if (!currentTrack || audio.paused) {
+        return;
+    }
+
+    const snapshotTime = audio.currentTime;
+    playbackHealthTimer = setTimeout(() => {
+        if (!currentTrack || audio.paused) {
+            return;
+        }
+
+        const remaining = Number.isFinite(audio.duration)
+            ? Math.max(0, audio.duration - audio.currentTime)
+            : Infinity;
+        const stalled = Math.abs(audio.currentTime - snapshotTime) < 0.02
+            && audio.currentTime > 0
+            && remaining > 0.8;
+
+        if (stalled) {
+            recoverCurrentTrackPlayback("stalled").catch(console.error);
+        }
+    }, delay);
+}
+
+async function recoverCurrentTrackPlayback(reason = "error") {
+    if (!currentTrack) {
+        return;
+    }
+
+    const trackId = currentTrack.id;
+    const attempts = playbackRecoveryAttempts.get(trackId) || 0;
+
+    if (attempts >= 2) {
+        showToast(
+            "Não foi possível recuperar esta faixa. Se persistir, exclua e envie a música novamente.",
+            "error",
+        );
+        return;
+    }
+
+    playbackRecoveryAttempts.set(trackId, attempts + 1);
+
+    const resumeTime = Math.max(0, audio.currentTime || 0);
+    const shouldResume = !audio.paused;
+
+    try {
+        showToast("Recuperando reprodução…");
+        revokeCachedAssetUrl(trackId, "audio");
+
+        const source = currentTrack.audioUrl && currentTrack.audioUrl !== "firestore-chunks"
+            ? currentTrack.audioUrl
+            : await buildAssetUrl(currentTrack, "audio");
+
+        await new Promise((resolve, reject) => {
+            const onLoaded = () => {
+                audio.removeEventListener("error", onError);
+                resolve();
+            };
+
+            const onError = () => {
+                audio.removeEventListener("loadedmetadata", onLoaded);
+                reject(new Error(reason));
+            };
+
+            audio.addEventListener("loadedmetadata", onLoaded, { once: true });
+            audio.addEventListener("error", onError, { once: true });
+            audio.src = source;
+            audio.load();
+        });
+
+        if (resumeTime > 0 && Number.isFinite(audio.duration) && audio.duration > 0) {
+            audio.currentTime = Math.min(resumeTime, Math.max(0, audio.duration - 0.35));
+        }
+
+        if (shouldResume) {
+            await audio.play();
+        }
+    }
+    catch (error) {
+        console.error("Playback recovery:", error);
+        showToast("A reprodução falhou. Tente tocar novamente.", "error");
+    }
+}
+
 function isNowPlayingScreenOpen() {
     return nowPlayingScreen.classList.contains("is-open");
 }
@@ -1832,6 +1348,7 @@ async function selectCurrentTrack(track) {
         fullscreenTrackStage.classList.add("track-exit");
         await wait(220);
     }
+    resetPlaybackRecovery(track?.id);
     currentTrack = track;
     updatePlayerUI();
     renderHome();
@@ -1863,6 +1380,7 @@ async function playTrack(track) {
         audio.src = source;
         audio.load();
         await audio.play();
+        resetPlaybackRecovery(track.id);
         await updateMediaSession(track);
     }
     catch (error) {
@@ -1977,7 +1495,7 @@ function setFullscreenCover(track) {
         setLogoPlaceholder(fullscreenCover);
         return;
     }
-    const cached = coverUrlCache.get(track.id);
+    const cached = getCachedAssetUrl(track.id, "cover");
     if (cached) {
         fullscreenCover.innerHTML = "";
         fullscreenCover.style.backgroundImage = `url("${cached}")`;
@@ -2072,7 +1590,7 @@ function updatePlayerUI() {
     playerLike.classList.toggle("liked", isSaved);
     setPlayState(playBtn, !audio.paused);
     updateFullscreenUI();
-    const cachedCover = coverUrlCache.get(currentTrack.id);
+    const cachedCover = getCachedAssetUrl(currentTrack.id, "cover");
     if (cachedCover) {
         playerCover.innerHTML = "";
         playerCover.style.backgroundImage = `url("${cachedCover}")`;
@@ -2151,6 +1669,7 @@ audio.addEventListener("play", () => {
     }
 });
 audio.addEventListener("pause", () => {
+    clearPlaybackHealthTimer();
     document.body.classList.remove("is-playing");
     updatePlayerUI();
     renderHome();
@@ -2165,6 +1684,7 @@ audio.addEventListener("loadedmetadata", () => {
     fullscreenDuration.textContent = formattedDuration;
 });
 audio.addEventListener("timeupdate", () => {
+    schedulePlaybackHealthCheck();
     currentTime.textContent = formatTime(audio.currentTime);
     const percentage = audio.duration
         ? (audio.currentTime / audio.duration) * 100 : 0;
@@ -2185,7 +1705,17 @@ audio.addEventListener("timeupdate", () => {
         catch { }
     }
 });
+audio.addEventListener("waiting", () => {
+    schedulePlaybackHealthCheck(1800);
+});
+audio.addEventListener("stalled", () => {
+    schedulePlaybackHealthCheck(1100);
+});
+audio.addEventListener("error", () => {
+    recoverCurrentTrackPlayback("error").catch(console.error);
+});
 audio.addEventListener("ended", () => {
+    resetPlaybackRecovery();
     document.body.classList.remove("is-playing");
     if (repeat) {
         audio.currentTime = 0;
@@ -2238,224 +1768,86 @@ document
     });
 });
 
+initAuth({
+    auth,
+    db,
+    gateAuthForm,
+    accountModal,
+    adminEmail: ADMIN_EMAIL,
+    suggestionRefs: {
+        suggestionUserEmail,
+        suggestionList,
+        suggestionTotal,
+        suggestionBadge,
+    },
+    uiRefs: {
+        authGate: $("#authGate"),
+        appRoot: $("#appRoot"),
+        profileLabel: $("#profileLabel"),
+        avatar: $("#avatar"),
+        accountEmail: $("#accountEmail"),
+    },
+    helpers: {
+        $,
+        initials,
+        escapeHtml,
+        showToast,
+        updateAdminUI,
+        isOwner,
+        migrateLegacyTrack: (track) => migrateLegacyTrack(
+            track,
+            (migratedTrack) => showToast(`Dados de “${migratedTrack.title}” organizados.`),
+        ),
+    },
+    actions: {
+        renderHome,
+        renderLibrary,
+        refreshCurrentTrack,
+        updatePlayerUI,
+        renderSuggestions: null,
+        setTracks: (nextTracks) => {
+            tracks = nextTracks;
+        },
+        setPlaylists: (nextPlaylists) => {
+            playlists = nextPlaylists;
+        },
+        setSavedTrackIds: (nextSavedTrackIds) => {
+            savedTrackIds = nextSavedTrackIds;
+        },
+        clearSavedTrackIds: () => {
+            savedTrackIds.clear();
+        },
+        setCurrentTrack: (track) => {
+            currentTrack = track;
+        },
+        pauseAndResetAudio: () => {
+            audio.pause();
+            audio.removeAttribute("src");
+        },
+    },
+});
+
+initScrollbar({
+    $,
+});
+
+initPWA({
+    installButton: $("#installAppBtn"),
+    onInstalled: () => showToast("RedBeat instalado no dispositivo."),
+    onError: () => showToast("Não foi possível preparar a instalação do app.", "error"),
+});
+
+setGenreSelectValue(trackGenreSelect?.value || "");
+
 window.addEventListener("beforeunload", () => {
-    for (const url of audioUrlCache.values()) {
-        URL.revokeObjectURL(url);
-    }
-    for (const url of coverUrlCache.values()) {
-        URL.revokeObjectURL(url);
-    }
+    revokeAllAssetUrls();
     if (localCoverPreviewUrl) {
         URL.revokeObjectURL(localCoverPreviewUrl);
     }
 });
-setGateMode("login");
 renderHome();
 renderLibrary();
 updatePlayerUI();
 updateAppBackButton();
 
 
-// ==================== SCROLLBAR PRÓPRIO DO SITE ====================
-
-const pageScrollContainer = $("#pageScrollContainer");
-const siteScrollbar = $("#siteScrollbar");
-const siteScrollbarTrack = $("#siteScrollbarTrack");
-const siteScrollThumb = $("#siteScrollThumb");
-
-let siteScrollRaf = 0;
-let siteScrollIdleTimer = 0;
-let siteScrollDragging = false;
-let siteScrollDragStartY = 0;
-let siteScrollDragStartTop = 0;
-
-function getPageScrollMetrics() {
-    if (!pageScrollContainer) {
-        return {
-            scrollHeight: 0,
-            viewportHeight: 0,
-            maxScroll: 0,
-            scrollTop: 0,
-        };
-    }
-
-    const scrollHeight = pageScrollContainer.scrollHeight;
-    const viewportHeight = pageScrollContainer.clientHeight;
-    const maxScroll = Math.max(0, scrollHeight - viewportHeight);
-
-    return {
-        scrollHeight,
-        viewportHeight,
-        maxScroll,
-        scrollTop: Math.min(
-            maxScroll,
-            Math.max(0, pageScrollContainer.scrollTop),
-        ),
-    };
-}
-
-function updateSiteScrollbar() {
-    siteScrollRaf = 0;
-
-    if (
-        !pageScrollContainer ||
-        !siteScrollbar ||
-        !siteScrollbarTrack ||
-        !siteScrollThumb
-    ) {
-        return;
-    }
-
-    const metrics = getPageScrollMetrics();
-    const trackHeight = siteScrollbarTrack.clientHeight;
-    const needsScrollbar = metrics.maxScroll > 2 && trackHeight > 0;
-
-    siteScrollbar.classList.toggle("is-needed", needsScrollbar);
-
-    if (!needsScrollbar) {
-        siteScrollThumb.style.height = "0px";
-        siteScrollThumb.style.transform = "translate3d(0,0,0)";
-        return;
-    }
-
-    const proportionalHeight = trackHeight * (
-        metrics.viewportHeight / metrics.scrollHeight
-    );
-    const thumbHeight = Math.max(
-        52,
-        Math.min(trackHeight, proportionalHeight),
-    );
-    const maxThumbTop = Math.max(0, trackHeight - thumbHeight);
-    const scrollRatio = metrics.maxScroll
-        ? metrics.scrollTop / metrics.maxScroll
-        : 0;
-    const thumbTop = maxThumbTop * scrollRatio;
-
-    siteScrollThumb.style.height = `${thumbHeight}px`;
-    siteScrollThumb.style.transform = `translate3d(0,${thumbTop}px,0)`;
-}
-
-function requestSiteScrollbarUpdate() {
-    if (siteScrollRaf) {
-        return;
-    }
-
-    siteScrollRaf = requestAnimationFrame(updateSiteScrollbar);
-}
-
-function wakeSiteScrollbar() {
-    if (!siteScrollbar) {
-        return;
-    }
-
-    siteScrollbar.classList.add("is-active");
-    clearTimeout(siteScrollIdleTimer);
-
-    siteScrollIdleTimer = setTimeout(() => {
-        if (!siteScrollDragging) {
-            siteScrollbar.classList.remove("is-active");
-        }
-    }, 850);
-}
-
-function scrollFromThumbTop(thumbTop) {
-    if (!pageScrollContainer) {
-        return;
-    }
-
-    const metrics = getPageScrollMetrics();
-    const trackHeight = siteScrollbarTrack.clientHeight;
-    const thumbHeight = siteScrollThumb.offsetHeight;
-    const maxThumbTop = Math.max(1, trackHeight - thumbHeight);
-    const clampedTop = Math.min(maxThumbTop, Math.max(0, thumbTop));
-    const ratio = clampedTop / maxThumbTop;
-
-    pageScrollContainer.scrollTo({
-        top: ratio * metrics.maxScroll,
-        behavior: "auto",
-    });
-}
-
-pageScrollContainer?.addEventListener("scroll", () => {
-    requestSiteScrollbarUpdate();
-    wakeSiteScrollbar();
-}, { passive: true });
-
-window.addEventListener("resize", requestSiteScrollbarUpdate, { passive: true });
-window.addEventListener("load", requestSiteScrollbarUpdate, { once: true });
-document.addEventListener("DOMContentLoaded", requestSiteScrollbarUpdate, { once: true });
-
-if ("ResizeObserver" in window && pageScrollContainer) {
-    const siteResizeObserver = new ResizeObserver(requestSiteScrollbarUpdate);
-    siteResizeObserver.observe(pageScrollContainer);
-
-    [$("#authGate"), $("#appRoot")].forEach((element) => {
-        if (element) {
-            siteResizeObserver.observe(element);
-        }
-    });
-}
-
-siteScrollbarTrack?.addEventListener("pointerdown", (event) => {
-    if (event.target.closest(".site-scrollbar-thumb")) {
-        return;
-    }
-
-    const rect = siteScrollbarTrack.getBoundingClientRect();
-    const thumbHeight = siteScrollThumb.offsetHeight;
-    const targetTop = event.clientY - rect.top - thumbHeight / 2;
-
-    scrollFromThumbTop(targetTop);
-    wakeSiteScrollbar();
-});
-
-siteScrollThumb?.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0 && event.pointerType === "mouse") {
-        return;
-    }
-
-    event.preventDefault();
-    siteScrollDragging = true;
-    siteScrollDragStartY = event.clientY;
-
-    const transform = new DOMMatrixReadOnly(
-        getComputedStyle(siteScrollThumb).transform,
-    );
-    siteScrollDragStartTop = transform.m42 || 0;
-
-    siteScrollbar.classList.add("is-dragging", "is-active");
-    siteScrollThumb.setPointerCapture?.(event.pointerId);
-});
-
-siteScrollThumb?.addEventListener("pointermove", (event) => {
-    if (!siteScrollDragging) {
-        return;
-    }
-
-    const deltaY = event.clientY - siteScrollDragStartY;
-    scrollFromThumbTop(siteScrollDragStartTop + deltaY);
-});
-
-function finishSiteScrollDrag(event) {
-    if (!siteScrollDragging) {
-        return;
-    }
-
-    siteScrollDragging = false;
-    siteScrollbar.classList.remove("is-dragging");
-
-    if (event?.pointerId != null) {
-        try {
-            siteScrollThumb.releasePointerCapture?.(event.pointerId);
-        } catch {}
-    }
-
-    wakeSiteScrollbar();
-}
-
-siteScrollThumb?.addEventListener("pointerup", finishSiteScrollDrag);
-siteScrollThumb?.addEventListener("pointercancel", finishSiteScrollDrag);
-
-requestSiteScrollbarUpdate();
-
-setGenreSelectValue(trackGenreSelect?.value || "");

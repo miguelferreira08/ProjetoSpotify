@@ -3,19 +3,24 @@
  <head>
   <meta charset="utf-8"/>
   <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
-  <meta content="#080808" name="theme-color"/>
+  <meta content="#e50914" name="theme-color"/>
+  <meta content="yes" name="apple-mobile-web-app-capable"/>
+  <meta content="black-translucent" name="apple-mobile-web-app-status-bar-style"/>
+  <meta content="RedBeat" name="apple-mobile-web-app-title"/>
   <title>
    RedBeat
   </title>
-  <link href="./favicon.svg?v=16" rel="icon" type="image/svg+xml"/>
-  <link href="./style.css" rel="stylesheet"/>
+  <link href="./favicon.svg?v=24" rel="icon" type="image/svg+xml"/>
+  <link href="./icons/apple-touch-icon.png" rel="apple-touch-icon"/>
+  <link href="./manifest.webmanifest" rel="manifest"/>
+  <link href="./style.css?v=24" rel="stylesheet"/>
  </head>
  <body>
   <div class="page-scroll-container" id="pageScrollContainer">
    <section class="auth-gate" id="authGate">
    <div class="auth-panel">
     <div class="auth-brand">
-     <img alt="" src="./favicon.svg?v=16"/>
+     <img alt="" src="./favicon.svg?v=24"/>
      <strong>
       RedBeat
      </strong>
@@ -61,7 +66,7 @@
      </span>
     </button>
     <a aria-label="RedBeat" class="brand" href="#" id="brandHome">
-     <img alt="" src="./favicon.svg?v=16"/>
+     <img alt="" src="./favicon.svg?v=24"/>
      <strong>
       RedBeat
      </strong>
@@ -156,7 +161,7 @@
       </div>
       <div aria-hidden="true" class="pulse-orbit">
        <div class="pulse-disc">
-        <img alt="" class="pulse-logo" src="./favicon.svg?v=16"/>
+        <img alt="" class="pulse-logo" src="./favicon.svg?v=24"/>
        </div>
        <div class="pulse-bars">
         <i>
@@ -424,7 +429,7 @@
    <footer class="player">
     <div aria-disabled="true" aria-label="Abrir música em reprodução" class="now-playing" id="nowPlayingTrigger" role="button" tabindex="0">
      <div class="player-cover" id="playerCover">
-      <img alt="" src="./favicon.svg?v=16"/>
+      <img alt="" src="./favicon.svg?v=24"/>
      </div>
      <div class="player-meta">
       <strong id="playerTitle">
@@ -481,7 +486,7 @@
     <div class="fullscreen-shell">
      <div class="fullscreen-topbar">
       <div class="fullscreen-brand">
-       <img alt="" src="./favicon.svg?v=16"/>
+       <img alt="" src="./favicon.svg?v=24"/>
        <span>
         RedBeat
        </span>
@@ -493,7 +498,7 @@
      <div class="fullscreen-track-stage" id="fullscreenTrackStage">
       <div class="fullscreen-art-column">
        <div class="fullscreen-cover" id="fullscreenCover">
-        <img alt="" src="./favicon.svg?v=16"/>
+        <img alt="" src="./favicon.svg?v=24"/>
        </div>
       </div>
       <div class="fullscreen-info">
@@ -728,6 +733,10 @@
     <p class="modal-copy" id="accountCopy">
      Sua biblioteca e playlists ficam vinculadas à sua conta.
     </p>
+    <button class="secondary-btn full install-app-btn hidden" id="installAppBtn" type="button">
+     <span aria-hidden="true">↓</span>
+     Instalar RedBeat
+    </button>
     <button class="secondary-btn full" id="logoutBtn">
      Sair
     </button>
@@ -735,7 +744,7 @@
   </dialog>
   <div aria-live="polite" class="toast" id="toast" role="status">
   </div>
-  <script src="./app.js" type="module">
+  <script src="./app.js?v=24" type="module">
   </script>
  
   <div aria-hidden="true" class="site-scrollbar" id="siteScrollbar">

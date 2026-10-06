@@ -1,0 +1,103 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return signedIn()
+        && request.auth.token.email == "miguelfer0808@gmail.com";
+    }
+
+    match /tracks/{trackId} {
+      // Todo usuário autenticado pode ouvir e consultar o catálogo.
+      allow read: if signedIn();
+
+      // Somente a conta administradora pode criar músicas.
+      allow create: if isAdmin()
+        && request.resource.data.recordType == "track"
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.genre in [
+          "Eletrônica",
+          "Rock",
+          "Funk",
+          "Pagode",
+          "Sertanejo",
+          "Trap",
+          "Pop",
+          "Regional",
+          "Reggae",
+          "Jazz",
+          "Hip-Hop/Rap",
+          "Outros"
+        ];
+
+      // Somente a conta administradora pode alterar o catálogo e
+      // os gêneros continuam limitados às categorias do aplicativo.
+      allow update: if isAdmin()
+        && request.resource.data.recordType == "track"
+        && request.resource.data.genre in [
+          "Eletrônica",
+          "Rock",
+          "Funk",
+          "Pagode",
+          "Sertanejo",
+          "Trap",
+          "Pop",
+          "Regional",
+          "Reggae",
+          "Jazz",
+          "Hip-Hop/Rap",
+          "Outros"
+        ];
+
+      allow delete: if isAdmin();
+
+      match /audioChunks/{chunkId} {
+        allow read: if signedIn();
+        allow create, update, delete: if isAdmin();
+      }
+
+      match /coverChunks/{chunkId} {
+        allow read: if signedIn();
+        allow create, update, delete: if isAdmin();
+      }
+    }
+
+
+
+    match /suggestions/{suggestionId} {
+      // Qualquer usuário autenticado pode enviar uma sugestão,
+      // mas somente em seu próprio nome e para o administrador.
+      allow create: if signedIn()
+        && request.resource.data.senderUid == request.auth.uid
+        && request.resource.data.senderEmail == request.auth.token.email
+        && request.resource.data.recipientEmail == "miguelfer0808@gmail.com"
+        && request.resource.data.recipientLabel == "Administrador"
+        && request.resource.data.status == "new"
+        && request.resource.data.songName is string
+        && request.resource.data.songName.size() > 0
+        && request.resource.data.songName.size() <= 120
+        && request.resource.data.artist is string
+        && request.resource.data.artist.size() > 0
+        && request.resource.data.artist.size() <= 120;
+
+      // Somente o administrador lê, altera ou remove a caixa de sugestões.
+      allow read, update, delete: if isAdmin();
+    }
+
+    match /users/{userId} {
+      // Cada usuário controla somente a própria biblioteca e playlists.
+      allow read, create, update, delete: if signedIn()
+        && request.auth.uid == userId;
+
+      match /{document=**} {
+        allow read, create, update, delete: if signedIn()
+          && request.auth.uid == userId;
+      }
+    }
+  }
+}
